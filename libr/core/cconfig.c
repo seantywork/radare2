@@ -3793,6 +3793,7 @@ R_API int r_core_config_init(RCore *core) {
 	SETI ("asm.hint.pos", 1, "shortcut hint position (-1, 0, 1)");
 	SETB ("asm.slow", "true", "perform slow analysis operations in disasm");
 	SETB ("asm.decode", "false", "use code analysis as a disassembler");
+	SETI ("asm.imm.base", 0, "Specify the default base for immediates in disassembly");
 	SETB ("asm.imm.str", "true", "show immediates values as strings");
 	SETB ("asm.imm.trim", "false", "remove all offsets and constants from disassembly");
 	SETB ("asm.indent", "false", "indent disassembly based on refline/bb depth (EXPERIMENTAL)");
@@ -4670,13 +4671,13 @@ R_API void r_core_parse_radare2rc(RCore *r) {
 	R_FREE (homerc);
 	char *configdir = r_xdg_configdir (NULL);
 	if (configdir) {
-		homerc = r_file_new (configdir, "radare2rc", NULL);
+		homerc = r_file_new (configdir, "radare2", "rc", NULL);
 		if (homerc && r_file_is_regular (homerc)) {
 			R_LOG_DEBUG ("user script loaded from %s", homerc);
 			r_core_cmd_file (r, homerc);
 		}
 		free (homerc);
-		homerc = r_file_new (configdir, "radare2rc.d", NULL);
+		homerc = r_file_new (configdir, "radare2", "rc.d", NULL);
 		free (configdir);
 	}
 	if (homerc) {
