@@ -1200,43 +1200,13 @@ static RCoreHelpMessage help_msg_axf = {
 	NULL
 };
 
-#if 0
-static bool fcnNeedsPrefix(const char *name) {
-	if (r_str_startswith (name, "entry")) {
-		return false;
-	}
-	if (r_str_startswith (name, "main")) {
-		return false;
-	}
-	return (!strchr (name, '.'));
-}
-
-static char *getFunctionName(RCore *core, ut64 off, const char *name, bool prefix) {
-	const char *fcnpfx = "";
-	if (prefix) {
-		if (fcnNeedsPrefix (name) && R_STR_ISEMPTY (fcnpfx)) {
-			fcnpfx = "fcn";
-		} else {
-			fcnpfx = r_config_get (core->config, "anal.fcnprefix");
-		}
-	}
-	if (r_reg_get (core->anal->reg, name, -1)) {
-		return r_str_newf ("%s.%08"PFMT64x, "fcn", off);
-	}
-	return strdup (name);
-}
-#else
 static char *getFunctionName(RCore *core, ut64 off, const char *name, bool prefix) {
 	if (!name || r_reg_get (core->anal->reg, name, -1)) {
-		const char *fcnpfx = r_config_get (core->config, "anal.fcnprefix");
-		if (R_STR_ISEMPTY (fcnpfx)) {
-			return r_str_newf ("fcn_%08"PFMT64x, off);
-		}
+		const char *fcnpfx = r_anal_fcn_prefix_at (core->anal, off);
 		return r_str_newf ("%s.%08"PFMT64x, fcnpfx, off);
 	}
 	return strdup (name);
 }
-#endif
 
 static inline const char *get_arch_name(RCore *core) {
 	return r_config_get (core->config, "asm.arch");
@@ -1448,7 +1418,7 @@ static void __add_vars_sdb(RCore *core, RAnalFunction *fcn) {
 		// sdb_num_set (core->anal->sdb_types, k, (ut64)arg_count, 0);
 		free (k);
 		free (v);
- 	}
+	}
 	free (args);
 	r_anal_function_vars_cache_fini (&cache);
 }
@@ -2269,57 +2239,57 @@ static int cmd_afv(RCore *core, const char *str) {
 		}
 		break;
 	case ' ': { // "afvs" "afvb" "afvr"
-		bool isarg = false;
-		const int size = 4;
-		p = strchr (ostr, ' ');
-		if (!p) {
-			var_help (core, type);
-			break;
-		}
-		if (!fcn) {
-			R_LOG_ERROR ("Missing function at 0x%08" PFMT64x, core->addr);
-			break;
-		}
-		*p++ = 0;
-		r_str_trim_head (p);
-		char *name = strchr (p, ' ');
-		if (!name) {
-			R_LOG_ERROR ("Missing name");
-			break;
-		}
-		*name++ = 0;
-		r_str_trim_head (name);
+			  bool isarg = false;
+			  const int size = 4;
+			  p = strchr (ostr, ' ');
+			  if (!p) {
+				  var_help (core, type);
+				  break;
+			  }
+			  if (!fcn) {
+				  R_LOG_ERROR ("Missing function at 0x%08" PFMT64x, core->addr);
+				  break;
+			  }
+			  *p++ = 0;
+			  r_str_trim_head (p);
+			  char *name = strchr (p, ' ');
+			  if (!name) {
+				  R_LOG_ERROR ("Missing name");
+				  break;
+			  }
+			  *name++ = 0;
+			  r_str_trim_head (name);
 
-		if (type == 'r') { // registers
-			RRegItem *ri = r_reg_get (core->anal->reg, p, -1);
-			if (!ri) {
-				R_LOG_ERROR ("Register not found");
-				break;
-			}
-			delta = ri->index;
-			isarg = true;
-			r_unref (ri);
-		} else {
-			delta = r_num_math (core->num, p);
-		}
+			  if (type == 'r') { // registers
+				  RRegItem *ri = r_reg_get (core->anal->reg, p, -1);
+				  if (!ri) {
+					  R_LOG_ERROR ("Register not found");
+					  break;
+				  }
+				  delta = ri->index;
+				  isarg = true;
+				  r_unref (ri);
+			  } else {
+				  delta = r_num_math (core->num, p);
+			  }
 
-		char *vartype = strchr (name, ' ');
-		if (!vartype) {
-			vartype = "int";
-		} else {
-			*vartype++ = 0;
-			r_str_trim (vartype);
-		}
-		if (type == 'b') {
-			delta -= fcn->bp_off;
-		}
-		if ((type == 'b') && delta > 0) {
-			isarg = true;
-		} else if (type == 's' && delta > fcn->maxstack) {
-			isarg = true;
-		}
-		r_anal_function_set_var (fcn, delta, type, vartype, size, isarg, name);
- 		}
+			  char *vartype = strchr (name, ' ');
+			  if (!vartype) {
+				  vartype = "int";
+			  } else {
+				  *vartype++ = 0;
+				  r_str_trim (vartype);
+			  }
+			  if (type == 'b') {
+				  delta -= fcn->bp_off;
+			  }
+			  if ((type == 'b') && delta > 0) {
+				  isarg = true;
+			  } else if (type == 's' && delta > fcn->maxstack) {
+				  isarg = true;
+			  }
+			  r_anal_function_set_var (fcn, delta, type, vartype, size, isarg, name);
+		  }
 		break;
 	default:
 		r_core_cmd_help (core, help_msg_afv);
@@ -9288,8 +9258,12 @@ static void cmd_anal_esil(RCore *core, const char *input, bool verbose) {
 				envp[i] = 0;
 #if R2__UNIX__
 				if (strstr (input, "$env")) {
+#if defined(__APPLE__) && !TARGET_OS_IPHONE
+					cmd_debug_stack_init (core, argc, argv, (*_NSGetEnviron()));
+#else
 					extern char **environ;
 					cmd_debug_stack_init (core, argc, argv, environ);
+#endif
 				} else {
 					cmd_debug_stack_init (core, argc, argv, envp);
 				}
@@ -10701,8 +10675,9 @@ static char *get_buf_asm(RCore *core, ut64 from, ut64 addr, RAnalFunction *fcn, 
 	core->rasm->parse->pseudo = r_config_get_b (core->config, "asm.pseudo");
 	core->rasm->parse->subrel = r_config_get_i (core->config, "asm.sub.rel");
 	core->rasm->parse->localvar_only = r_config_get_b (core->config, "asm.sub.varonly");
-
+	ut64 osubreladdr = UT64_MAX;
 	if (core->rasm->parse->subrel) {
+		osubreladdr = core->rasm->parse->subrel_addr;
 		core->rasm->parse->subrel_addr = from;
 	}
 	r_io_read_at (core->io, addr, buf, size);
@@ -10736,6 +10711,9 @@ static char *get_buf_asm(RCore *core, ut64 from, ut64 addr, RAnalFunction *fcn, 
 		buf_asm = strdup (asmop.mnemonic);
 	}
 	r_asm_op_fini (&asmop);
+	if (osubreladdr != UT64_MAX) {
+		core->rasm->parse->subrel_addr = osubreladdr;
+	}
 	return buf_asm;
 }
 
@@ -11153,10 +11131,9 @@ static bool cmd_anal_refs(RCore *core, const char *input) {
 					i++;
 				}
 			} else if (input[1] == ' ' || input[1] == 0 || input[1] == '.') { // "axt"
-				RAnalFunction *fcn;
 				RAnalRef *ref;
 				R_VEC_FOREACH (list, ref) {
-					fcn = r_anal_get_fcn_in (core->anal, ref->addr, 0);
+					RAnalFunction *fcn = r_anal_get_fcn_in (core->anal, ref->addr, 0);
 					char *buf_asm = get_buf_asm (core, addr, ref->addr, fcn, true);
 					const char *comment = r_meta_get_string (core->anal, R_META_TYPE_COMMENT, ref->addr);
 					char *print_comment = NULL;
@@ -14318,7 +14295,6 @@ static void cmd_aaa(RCore *core, const char *input) {
 		r_core_cmd0 (core, "afva@@@F");
 	}
 #endif
-
 	// Run pending analysis immediately after analysis
 	// Usefull when running commands with ";" or via r2 -c,-i
 	dh_orig = (core->dbg->current && core->dbg->current->plugin)
@@ -14417,8 +14393,8 @@ static void cmd_aaa(RCore *core, const char *input) {
 			run_aaef = false;
 		}
 		if (run_aaef) { // emulate all functions
-				// if (!r_str_startswith (asm_arch, "hex"))  maybe?
-				// XXX moving this oustide the x86 guard breaks some tests, missing types
+			// if (!r_str_startswith (asm_arch, "hex"))  maybe?
+			// XXX moving this oustide the x86 guard breaks some tests, missing types
 			if (cfg_debug) {
 				logline (core, 65, "Skipping function emulation in debugger mode (aaef)");
 				// nothing to do
@@ -14555,6 +14531,8 @@ static int cmd_anal_all(RCore *core, const char *input) {
 	case 'f':
 		if (input[1] == 'e') {  // "aafe"
 			r_core_cmd0 (core, "aef@@F");
+		} else if (input[1] == '?') {
+			r_core_cmd_help_match (core, help_msg_aa, "aaf");
 		} else if (input[1] == 'r') {
 			ut64 cur = core->addr;
 			RListIter *iter;
@@ -15492,7 +15470,6 @@ static void cmd_anal_aC(RCore *core, const char *input) {
 		r_reg_setv (core->anal->reg, "SP", spv + s_width); // temporarily set stack ptr to sync with carg.c
 		RList *list = r_core_get_func_args (core, fcn_name);
 		if (!r_list_empty (list)) {
-	#if 1
 			bool on_stack = false;
 			r_list_foreach (list, iter, arg) {
 				if (r_str_startswith (arg->cc_source, "stack")) {
@@ -15502,7 +15479,6 @@ static void cmd_anal_aC(RCore *core, const char *input) {
 					r_strbuf_appendf (sb, "%s: unk_size", arg->c_type);
 				}
 			}
-	#endif
 			r_list_foreach (list, iter, arg) {
 				nextele = r_list_iter_get_next (iter);
 				if (!arg->fmt) {

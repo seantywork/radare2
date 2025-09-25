@@ -1007,6 +1007,7 @@ R_API char *r_file_temp_ex(const char * R_NULLABLE prefix, const char * R_NULLAB
 	return res;
 }
 
+#if !__wasi__ && !R2__WINDOWS__
 static inline char *file_fmt_split(const char *fmt) {
 	if (R_STR_ISEMPTY (fmt)) {
 		return r_file_temp_ex (NULL, NULL);
@@ -1025,6 +1026,7 @@ static inline char *file_fmt_split(const char *fmt) {
 	}
 	return name;
 }
+#endif
 
 R_API int r_file_mkstemp(const char * R_NULLABLE prefix, char **oname) {
 	int h = -1;
@@ -1114,7 +1116,7 @@ R_API char *r_file_tmpdir(void) {
 	}
 #else
 	char *path = r_sys_getenv ("XDG_RUNTIME_DIR");
-	if (R_STR_ISEMPTY (path)) {
+	if (R_STR_ISEMPTY (path) || !r_file_is_directory (path)) {
 		free (path);
 		path = r_sys_getenv ("TMPDIR");
 		if (path && !*path) {
@@ -1135,8 +1137,8 @@ R_API char *r_file_tmpdir(void) {
 #endif
 	if (!r_file_is_directory (path)) {
 		free (path);
-		return NULL;
-		//R_LOG_ERROR ("Cannot find dir.tmp '%s'", path);
+		// Always default to "/tmp"
+		path = strdup ("/tmp");
 	}
 	return path;
 }

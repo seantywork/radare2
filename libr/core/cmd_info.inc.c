@@ -268,7 +268,7 @@ static void cmd_info_demangle(RCore *core, const char *input, PJ *pj, int mode) 
 		pj_end (pj);
 	} else {
 		if (res) {
-			r_cons_printf (core->cons, "%s\n", res);
+			r_cons_println (core->cons, res);
 		} else {
 			R_LOG_ERROR (err);
 		}
@@ -2593,6 +2593,9 @@ static int cmd_info(void *data, const char *input) {
 		case 'e': // "ise"
 			r_core_cmdf (core, "ies%s", input + 1);
 			return 0;
+		case '*':
+			mode = R_MODE_RADARE;
+			break;
 		case 'j':
 			mode = R_MODE_JSON;
 			INIT_PJ ();
@@ -2601,10 +2604,10 @@ static int cmd_info(void *data, const char *input) {
 			if (input[2] == 'q') {
 				mode = R_MODE_SIMPLEST;
 			}
-		// case ',':
-		case ' ':
 		case 0:
+		case ' ':
 		case '.':
+		case ',':
 			break;
 		default:
 			r_core_return_invalid_command (core, "is", input[1]);

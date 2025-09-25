@@ -19,9 +19,6 @@
 /* speedup analysis by removing some function overlapping checks */
 #define JAYRO_04 1
 
-// 16 KB is the maximum size for a basic block
-#define MAX_FLG_NAME_SIZE 64
-
 #define FIX_JMP_FWD 0
 #define D if (a->verbose)
 
@@ -747,6 +744,13 @@ static int fcn_recurse(RAnal *anal, RAnalFunction *fcn, ut64 addr, ut64 len, int
 		variadic_reg = "rax";
 	}
 	bool has_variadic_reg = !!variadic_reg;
+	bool nopskip = anal->opt.nopskip;
+	if (nopskip) {
+		const bool isvm = r_anal_archinfo (anal, R_ARCH_INFO_ISVM) == R_ARCH_INFO_ISVM;
+		if (isvm) {
+			nopskip = false;
+		}
+	}
 
 	op = r_anal_op_new ();
 	const ut32 opflags = R_ARCH_OP_MASK_BASIC | R_ARCH_OP_MASK_ESIL | R_ARCH_OP_MASK_VAL | R_ARCH_OP_MASK_HINT;
@@ -794,7 +798,7 @@ repeat:
 		op_src = (src0 && src0->reg)? strdup (src0->reg): NULL;
 		src1 = r_vector_at (&op->srcs, 1);
 
-		if (anal->opt.nopskip && fcn->addr == at) {
+		if (nopskip && fcn->addr == at) {
 			const int codealign = r_anal_archinfo (anal, R_ARCH_INFO_CODE_ALIGN);
 			if (codealign > 1) {
 				if (at % codealign) {

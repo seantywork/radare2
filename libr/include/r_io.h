@@ -13,6 +13,7 @@
 #define R_IO_SEEK_SET 0
 #define R_IO_SEEK_CUR 1
 #define R_IO_SEEK_END 2
+#define R_IO_SEEK_HOLE 3
 
 #define R_IO_UNDOS 64
 
@@ -677,6 +678,7 @@ extern RIOPlugin r_io_plugin_xalz;
 extern RIOPlugin r_io_plugin_reg;
 extern RIOPlugin r_io_plugin_treebuf;
 extern RIOPlugin r_io_plugin_sysgdb;
+extern RIOPlugin r_io_plugin_pvm;
 extern RIOPlugin r_io_plugin_serial;
 extern RIOPlugin r_io_plugin_cyclic;
 extern RIOPlugin r_io_plugin_uf2;

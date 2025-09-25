@@ -220,11 +220,10 @@ static int main_help(int line) {
 		" -F [binplug] force to use that rbin plugin\n"
 		" -h, -hh      show help message, -hh for long\n"
 		" -H ([var])   display variable\n"
-		" -i [file]    run script file\n"
+		" -i [file]    run rlang program, r2script file or load plugin\n"
 		" -I [file]    run script file before the file is opened\n"
 		" -j           use json for -v, -L and maybe others\n"
 		" -k [OS/kern] set asm.os (linux, macos, w32, netbsd, ...)\n"
-		" -l [lib]     load plugin file\n"
 		" -L, -LL      list supported IO plugins (-LL list core plugins)\n"
 		" -m [addr]    map file at given address (loadaddr)\n"
 		" -M           do not demangle symbol names\n"
@@ -269,6 +268,7 @@ static int main_help(int line) {
 		" R2_DEBUG        if defined, show error messages and crash signal\n"
 		" R2_PAPI_SCRIPT  path to the custom r2papi csript\n"
 		" R2_DEBUG_NOPAPI do not load r2papi in the -j qjs shell\n"
+		" R2_DEBUG_NOLANG do not load rlang plugins (except qjs)\n"
 		" R2_DEBUG_ASSERT set a breakpoint when hitting an assert\n"
 		" R2_IGNVER       load plugins ignoring the specified version (be careful)\n"
 		" R2_IGNABI       ignore abiversion field from the radare (be even more careful)\n"
@@ -286,6 +286,7 @@ static int main_help(int line) {
 		" R2_RCFILE    ~/.radare2rc\n"
 		" R2_INCDIR    "R2_INCDIR"\n"
 		" R2_BINDIR    "R2_BINDIR"\n"
+		" R2_MANDIR    "R2_MANDIR"\n"
 		" R2_LIBDIR    "R2_LIBDIR"\n"
 		" R2_LIBEXT    "R_LIB_EXT"\n"
 		" R2_PREFIX    "R2_PREFIX"\n"
@@ -307,10 +308,12 @@ static int main_print_var(const char *var_name) {
 	char *incdir = r_str_r2_prefix (R2_INCDIR);
 	char *libdir = r_str_r2_prefix (R2_LIBDIR);
 	char *bindir = r_str_r2_prefix (R2_BINDIR);
+	char *mandir = r_str_r2_prefix (R2_MANDIR);
 #else
 	char *incdir = strdup (R2_INCDIR);
 	char *libdir = strdup (R2_LIBDIR);
 	char *bindir = strdup (R2_BINDIR);
+	char *mandir = strdup (R2_MANDIR);
 #endif
 	char *rcfile = r_file_home (".radare2rc");
 	char *confighome = r_xdg_configdir (NULL);
@@ -331,6 +334,7 @@ static int main_print_var(const char *var_name) {
 		{ "R2_MAGICPATH", magicpath },
 		{ "R2_INCDIR", incdir },
 		{ "R2_BINDIR", bindir },
+		{ "R2_MANDIR", mandir },
 		{ "R2_RCFILE", rcfile },
 		{ "R2_LIBDIR", libdir },
 		{ "R2_LIBEXT", R_LIB_EXT },
@@ -903,9 +907,6 @@ R_API int r_main_radare2(int argc, const char **argv) {
 		case 'k':
 			free (mr.asmos);
 			mr.asmos = strdup (opt.arg);
-			break;
-		case 'l':
-			r_lib_open (r->lib, opt.arg);
 			break;
 		case 'L':
 			if (mr.do_list_io_plugins) {

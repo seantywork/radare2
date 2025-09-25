@@ -10,6 +10,12 @@
 #ifndef __wasi__
 #include <pwd.h>
 #endif
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#if !TARGET_OS_IPHONE
+#include <crt_externs.h>
+#endif
+#endif
 #endif
 
 #define SPECIAL_CHARS "@;~$#|`\"'()<>"
@@ -758,7 +764,14 @@ static int cmd_undo(void *data, const char *input) {
 		r_core_cmdf (data, "s-%s", input + 1);
 		return 1;
 	case 'w': // "uw"
-		r_core_cmdf (data, "wc%s", input + 1);
+		if (input[1] == 'u') {
+			r_cons_println (core->cons, ":3");
+		} else {
+			if (input[1] == '?') {
+				R_LOG_INFO ("uwu is an alias for 'wc'");
+			}
+			r_core_cmdf (data, "wc%s", input + 1);
+		}
 		return 1;
 	case 0:
 	case ' ':
@@ -6073,15 +6086,16 @@ R_API int r_core_cmd_foreach(RCore *core, const char *cmd, char *each) {
 				r_cons_break_push (core->cons, NULL, NULL);
 				r_core_return_code (core, 0);
 				for (cur = from; cur <= to; cur += step) {
+					/* stop when reaching EOF; when used in resize loops */
+					const ut64 fsz = r_io_size (core->io);
+					if (!fsz || cur >= fsz) {
+						break;
+					}
 					if (r_cons_is_breaked (core->cons)) {
 						break;
 					}
 					(void) r_core_seek (core, cur, true);
 					r_core_cmd (core, cmd, 0);
-					if (core->rc != 0) {
-						R_LOG_INFO ("@@s: sequence interrupted");
-						break;
-					}
 					if (!foreach_newline (core)) {
 						break;
 					}

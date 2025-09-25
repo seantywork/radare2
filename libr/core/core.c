@@ -270,6 +270,10 @@ static void archbits(RCore *core, ut64 addr) {
 	r_core_seek_arch_bits (core, addr);
 }
 
+static bool cfggetb(RCore *core, const char *k) {
+	return r_config_get_b (core->config, k);
+}
+
 static int cfggeti(RCore *core, const char *k) {
 	return r_config_get_i (core->config, k);
 }
@@ -350,6 +354,7 @@ R_API void r_core_bind(RCore *core, RCoreBind *bnd) {
 	bnd->getName = (RCoreGetName)getName;
 	bnd->getNameDelta = (RCoreGetNameDelta)getNameDelta;
 	bnd->archBits = (RCoreSeekArchBits)archbits;
+	bnd->cfgGetB = (RCoreConfigGetB)cfggetb;
 	bnd->cfgGetI = (RCoreConfigGetI)cfggeti;
 	bnd->cfgGet = (RCoreConfigGet)cfgget;
 	bnd->numGet = (RCoreNumGet)numget;
@@ -857,7 +862,7 @@ static void autocomplete_filename(RLineCompletion *completion, RLineBuffer *buf,
 		}
 #endif
 	} else {
-		args = R_STR_DUP (buf->data);
+		args = strdup (buf->data);
 	}
 
 	if (!args) {
@@ -869,7 +874,7 @@ static void autocomplete_filename(RLineCompletion *completion, RLineBuffer *buf,
 		goto out;
 	}
 
-	input = R_STR_DUP (r_str_word_get0 (args, narg));
+	input = strdup (r_str_word_get0 (args, narg));
 	if (!input) {
 		goto out;
 	}
@@ -1425,6 +1430,7 @@ R_API void r_core_autocomplete(RCore * R_NULLABLE core, RLineCompletion *complet
 	r_line_completion_clear (completion);
 	char *pipe = strchr (buf->data, '>');
 	char *ptr = strchr (buf->data, '@');
+	char *eq = strchr (buf->data, '=');
 
 	if (pipe) {
 		/* XXX this doesn't handle filenames with spaces */
@@ -1469,6 +1475,19 @@ R_API void r_core_autocomplete(RCore * R_NULLABLE core, RLineCompletion *complet
 			ADDARG ("newlisp");
 			ADDARG ("perl");
 			ADDARG ("python");
+		}
+	} else if (r_str_startswith (buf->data, "f ") && eq) {
+		// Enable address/math completion after "f name = <expr>"
+		char *expr_start = eq + ((eq[1] == ' ')? 2: 1);
+		char *expr_end = strchr (expr_start, ' ');
+		bool should_complete = (buf->data + buf->index) >= eq;
+		if (expr_end) {
+			should_complete &= (buf->data + buf->index) <= expr_end;
+		}
+		if (should_complete) {
+			if (eq[1] == ' ') {
+				autocomplete_flags (core, completion, expr_start);
+			}
 		}
 	} else if (r_str_startswith (buf->data, "ec ")) {
 		if (strchr (buf->data + 3, ' ')) {

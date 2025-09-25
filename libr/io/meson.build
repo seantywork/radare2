@@ -50,8 +50,11 @@ r_io_sources = [
   'p/io_uf2.c',
   'p/io_winkd.c',
   'p/io_winedbg.c',
-  'p/io_zip.c',
 ]
+
+if get_option('use_zip')
+  r_io_sources += [ 'p/io_zip.c' ]
+endif
 
 if host_machine.system() == 'windows'
   r_io_sources += [
@@ -71,7 +74,7 @@ r_io_deps = [
   gdb_dep,
   winkd_dep,
   qnx_dep,
-  zip_dep,
+  get_option('use_zip') ? zip_dep : declare_dependency(),
   ar_dep,
   pth
 ]
@@ -97,7 +100,6 @@ endif
 
 r_io = library('r_io', r_io_sources,
   include_directories: platform_inc,
-  link_with: [r_util, r_cons, r_muta, r_socket],
   dependencies: r_io_deps,
   c_args: library_cflags,
   install: true,
@@ -106,7 +108,7 @@ r_io = library('r_io', r_io_sources,
   soversion: r2_libversion
 )
 
-r_io_dep = declare_dependency(link_with: [r_io, r_muta],
+r_io_dep = declare_dependency(link_with: r_io,
   include_directories: platform_inc)
 
 if get_option('blob')
@@ -120,13 +122,12 @@ r_io_static_deps = [
   gdb_static_dep,
   qnx_static_dep,
   ar_static_dep,
-  zip_dep,
+  get_option('use_zip') ? zip_dep : declare_dependency(),
   pth
 ]
 
 r_io_static = static_library('r_io_static', r_io_sources,
   include_directories: platform_inc,
-  link_with: [r_util_static, r_muta_static, r_cons_static, r_socket_static],
   dependencies: r_io_static_deps,
   c_args: library_cflags,
   install: true,

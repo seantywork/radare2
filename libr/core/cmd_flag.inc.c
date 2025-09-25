@@ -42,7 +42,7 @@ static RCoreHelpMessage help_msg_f = {
 	"fc", "[?][name] [color]", "set color for given flag",
 	"fC", " [name] [cmt]", "set comment for given flag",
 	"fd", "[?] addr", "return flag+delta",
-	"fD", "[?] rawname", "(de)mangle flag or set a new flag",
+	"fD", "[?] rawname", "(de)mangle flag or set a new flag", // XXX we have id isnt'
 	"fe", " [name]", "create flag name.#num# enumerated flag. (f.ex: fe foo @@= 1 2 3 4)",
 	"fe-", "", "resets the enumerator counter",
 	"ff", " ([glob])", "distance in bytes to reach the next flag (see sn/sp)",
@@ -67,6 +67,7 @@ static RCoreHelpMessage help_msg_f = {
 	"ft", "[?]*", "flag tags, useful to find all flags matching some words",
 	"fV", "[*-] [nkey] [offset]", "dump/restore visual marks (mK/'K)",
 	"fx", "[d]", "show hexdump (or disasm) of flag:flagsize",
+	"fu", " [name]", "show unreal flag information (yeah that names is pretty bad)",
 	"fz", "[?][name]", "add named flag zone -name to delete. see fz?[name]",
 	NULL
 };
@@ -134,8 +135,10 @@ static RCoreHelpMessage help_msg_fs = {
 	"fs", "+foo", "push previous flagspace and set",
 	"fs", "-", "pop to the previous flagspace",
 	"fs", "-.", "remove the current flagspace",
+	"fsr", "[old] [new]", "rename a flagspace",
 	"fsq", "", "list flagspaces in quiet mode",
 	"fsm", " [addr]", "move flags at given address to the current flagspace",
+	"fsp", " <space> <prefix>", "associate flag name prefix with given flagspace",
 	"fss", "", "display flagspaces stack",
 	"fss*", "", "display flagspaces stack in r2 commands",
 	"fssj", "", "display flagspaces stack in JSON",
@@ -570,7 +573,6 @@ static void flagbars(RCore *core, const char *glob) {
 	if (cols < 0) {
 		cols += 80;
 	}
-
 	struct flagbar_t u = { .core = core, .cols = cols };
 	r_flag_foreach_space_glob (core->flags, glob, r_flag_space_cur (core->flags), flagbar_foreach, &u);
 }
@@ -763,7 +765,6 @@ static void flag_ordinals(RCore *core, const char *str) {
 	if (p) {
 		*p = 0;
 	}
-
 	struct rename_flag_t u = { .core = core, .pfx = pfx, .count = 0 };
 	r_flag_foreach_glob (core->flags, glob, rename_flag_ordinal, &u);
 	free (pfx);
@@ -881,6 +882,7 @@ static bool print_function_labels_cb(void *user, const ut64 addr, const void *v)
 			addr,
 			name, ctx->fcn->name,
 			addr - ctx->fcn->addr);
+		break;
 	}
 	return true;
 }
@@ -1238,6 +1240,217 @@ static void cmd_fR(RCore *core, const char *str) {
 	}
 }
 
+static void cmd_fsp(RCore *core, const char *input) {
+	if (input[2] == '?') {
+		r_core_cmd_help_match (core, help_msg_fs, "fsp");
+		return;
+	}
+	if (!input[2]) {
+		R_LOG_ERROR ("Usage: fsp <flagspace> <flagprefix>");
+		return;
+	}
+	if (input[2] != ' ') {
+		r_core_return_invalid_command (core, "fsp", input[2]);
+		return;
+	}
+	char *spname = r_str_trim_dup (input + 3);
+	char *sep = strchr (spname, ' ');
+	if (!sep) {
+		R_LOG_ERROR ("Usage: fsp <flagspace> <flagprefix>");
+		free (spname);
+		return;
+	}
+	*sep++ = '\0';
+	char *prefix = r_str_trim_dup (sep);
+	const RSpace *cursp = r_flag_space_cur (core->flags);
+	RSpace *target = r_flag_space_get (core->flags, spname);
+	if (!target) {
+		r_flag_space_set (core->flags, spname);
+		target = r_flag_space_get (core->flags, spname);
+		if (!target) {
+			R_LOG_ERROR ("Cannot create/get flagspace '%s'", spname);
+			free (prefix);
+			free (spname);
+			return;
+		}
+	}
+	if (cursp) {
+		r_flag_space_set (core->flags, cursp->name);
+	}
+	if (!target->prefixes) {
+		((RSpace *)target)->prefixes = r_list_newf (free);
+	}
+	r_list_append (((RSpace *)target)->prefixes, strdup (prefix));
+	free (prefix);
+	free (spname);
+}
+
+static void cmd_flag_spaces(RCore *core, const char *input) {
+	switch (input[1]) {
+	case '?': // "fs?"
+		r_core_cmd_help (core, help_msg_fs);
+		break;
+	case '+': // "fs+"
+		r_flag_space_push (core->flags, r_str_trim_head_ro (input + 2));
+		break;
+	case 'r': // "fsr"
+		if (input[2] == '?') {
+			r_core_cmd_help_match (core, help_msg_fs, "fsr");
+		} else if (input[2] == ' ') {
+			char *newname = r_str_trim_dup (input + 3);
+			r_str_trim (newname);
+			r_flag_space_rename (core->flags, NULL, newname);
+			free (newname);
+		} else {
+			r_core_return_invalid_command (core, "fsr", input[2]);
+		}
+		break;
+	case 's': // "fss"
+		flag_space_stack_list (core, input[2]);
+		break;
+	case '-': // "fs-"
+		switch (input[2]) {
+		case '*':
+			r_flag_space_unset (core->flags, NULL);
+			break;
+		case '.': {
+				  const RSpace *sp = r_flag_space_cur (core->flags);
+				  if (sp) {
+					  r_flag_space_unset (core->flags, sp->name);
+				  }
+				  break;
+			  }
+		case 0:
+			  r_flag_space_pop (core->flags);
+			  break;
+		default:
+			  r_flag_space_unset (core->flags, r_str_trim_head_ro (input + 2));
+			  break;
+		}
+		break;
+	case ' ':
+		{
+			char *name = r_str_trim_dup (input + 2);
+			r_str_trim (name);
+			r_flag_space_set (core->flags, name);
+			free (name);
+			break;
+		}
+	case 'm': // "fsm"
+		{
+			ut64 off = core->addr;
+			if (input[2] == ' ') {
+				off = r_num_math (core->num, input+2);
+			}
+			RFlagItem *f = r_flag_get_in (core->flags, off);
+			if (f) {
+				f->space = r_flag_space_cur (core->flags);
+			} else {
+				R_LOG_ERROR ("Cannot find any flag at 0x%"PFMT64x, off);
+			}
+			break;
+		}
+	case 'p': // "fsp"
+		cmd_fsp (core, input);
+		break;
+	case 'j':
+	case '\0':
+	case '*':
+	case 'q':
+		spaces_list (core, &core->flags->spaces, input[1]);
+		break;
+	default:
+		spaces_list (core, &core->flags->spaces, 0);
+		break;
+	}
+}
+
+static void cmd_fu(RCore *core, const char *input) {
+	if (input[1] == '=') {
+		char *a = r_str_trim_dup (input + 2);
+		RList *args = r_str_split_list (a, " ", 0);
+		/* Expected args: <size> <name> <rawname_b64> <realname_b64> */
+		char *szs = (char *)r_list_pop_head (args);
+		char *nme = (char *)r_list_pop_head (args);
+		char *rawb64 = (char *)r_list_pop_head (args);
+		char *realb64 = (char *)r_list_pop_head (args);
+		ut64 sz = 1;
+		if (R_STR_ISNOTEMPTY (szs)) {
+			sz = r_num_math (core->num, szs);
+		}
+		RFlagItem *item = r_flag_get_in (core->flags, core->addr);
+		if (!item) {
+			if (R_STR_ISNOTEMPTY (nme)) {
+				item = r_flag_set (core->flags, nme, core->addr, (ut32)sz);
+			} else {
+				R_LOG_ERROR ("fu=: missing flag at this address and no name provided");
+				r_list_free (args);
+				return;
+			}
+		} else {
+			item->size = sz;
+			if (nme && *nme && strcmp (item->name, nme)) {
+				(void)r_flag_rename (core->flags, item, nme);
+			}
+		}
+		if (rawb64 && *rawb64) {
+			char *rawdec = (char *)r_base64_decode_dyn (rawb64, -1, NULL);
+			free (item->rawname);
+			item->rawname = rawdec? rawdec: NULL;
+		}
+		if (realb64 && *realb64) {
+			char *realdec = (char *)r_base64_decode_dyn (realb64, -1, NULL);
+			if (realdec) {
+				(void)r_flag_item_set_realname (core->flags, item, realdec);
+				free (realdec);
+			} else {
+				(void)r_flag_item_set_realname (core->flags, item, NULL);
+			}
+		}
+		r_list_free (args);
+		free (a);
+	} else if (input[1] == '*') {
+		const char *arg = r_str_trim_head_ro (input + 2);
+		RFlagItem *item = r_flag_get (core->flags, arg);
+		if (!item) {
+			ut64 addr = *arg? r_num_math (core->num, arg): core->addr;
+			item = r_flag_get_in (core->flags, addr);
+		}
+		if (item) {
+			char *rawname = item->rawname? r_base64_encode_dyn ((void*)item->rawname, strlen (item->rawname)): NULL;
+			char *realname = item->realname? r_base64_encode_dyn ((void*)item->realname, strlen (item->realname)): NULL;
+			r_cons_printf (core->cons, "'@0x%08"PFMT64x"'fu %d %s %s %s\n",
+					item->addr, item->size, item->name, rawname, realname);
+			free (rawname);
+			free (realname);
+		} else {
+			R_LOG_WARN ("Unable to find a flag by %s", arg);
+		}
+	} else if (input[1] == ' ' || input[1] == '.' || input[1] == 0) {
+		RFlagItem *item;
+		if (input[1] == '.' || !input[1]) {
+			item = r_flag_get_in (core->flags, core->addr);
+		} else {
+			const char *arg = r_str_trim_head_ro (input + 2);
+			item = r_flag_get (core->flags, arg);
+			if (!item) {
+				ut64 addr = r_num_math (core->num, arg);
+				item = r_flag_get_in (core->flags, addr);
+			}
+		}
+		if (item) {
+			r_cons_printf (core->cons, "addr 0x%08"PFMT64x"\n", item->addr);
+			r_cons_printf (core->cons, "name %s\n", item->name);
+			r_cons_printf (core->cons, "rawn %s\n", item->rawname);
+			r_cons_printf (core->cons, "disp %s\n", item->realname);
+		} else {
+			R_LOG_WARN ("Unable to find a flag");
+		}
+	} else {
+		r_core_return_invalid_command (core, "fu", input[1]);
+	}
+}
+
 static int cmd_flag(void *data, const char *input) {
 	static R_TH_LOCAL int flagenum = 0;
 	RCore *core = (RCore *)data;
@@ -1415,10 +1628,18 @@ static int cmd_flag(void *data, const char *input) {
 		}
 		break;
 	case 'm': // "fm"
-		r_flag_move (core->flags, core->addr, r_num_math (core->num, input+1));
+		if (input[1] == '?') {
+			r_core_cmd_help_contains (core, help_msg_f, "fm");
+		} else {
+			r_flag_move (core->flags, core->addr, r_num_math (core->num, input+1));
+		}
 		break;
 	case 'R': // "fR"
-		cmd_fR (core, str);
+		if (input[1] == '?') {
+			r_core_cmd_help_contains (core, help_msg_f, "fR");
+		} else {
+			cmd_fR (core, str);
+		}
 		break;
 	case 'b': // "fb"
 		switch (input[1]) {
@@ -1446,7 +1667,11 @@ static int cmd_flag(void *data, const char *input) {
 		}
 		break;
 	case '+': // "f+'
-		cmd_flag_add (core, str, 1);
+		if (input[1] == '?') {
+			r_core_cmd_help_contains (core, help_msg_f, "f+");
+		} else {
+			cmd_flag_add (core, str, 1);
+		}
 		break;
 	case ' ': // "f "
 		cmd_flag_add (core, str, 0);
@@ -1596,10 +1821,15 @@ static int cmd_flag(void *data, const char *input) {
 	case 'z': // "fz"
 		cmd_fz (core, input + 1);
 		break;
-	case 'x':
-		if (input[1] == ' ') {
+	case 'u': // "fu"
+		cmd_fu (core, input);
+		break;
+	case 'x': // "fx"
+		if (input[1] == '?') {
+			r_core_cmd_help_contains (core, help_msg_f, "fx");
+		} else if (input[1] == ' ') {
 			RFlagItem *item = r_flag_get_in (core->flags,
-				r_num_math (core->num, input+2));
+				r_num_math (core->num, input + 2));
 			if (item) {
 				r_cons_printf (core->cons, "0x%08"PFMT64x"\n", item->addr);
 				r_core_cmdf (core, "px@%"PFMT64d":%"PFMT64d, item->addr, item->size);
@@ -1615,82 +1845,13 @@ static int cmd_flag(void *data, const char *input) {
 		cmd_flag_tags (core, input);
 		break;
 	case 's': // "fs"
-		switch (input[1]) {
-		case '?': // "fs?"
-			r_core_cmd_help (core, help_msg_fs);
-			break;
-		case '+': // "fs+"
-			r_flag_space_push (core->flags, r_str_trim_head_ro (input + 2));
-			break;
-		case 'r': // "fsr"
-			if (input[2] == ' ') {
-				char *newname = r_str_trim_dup (input + 3);
-				r_str_trim (newname);
-				r_flag_space_rename (core->flags, NULL, newname);
-				free (newname);
-			} else {
-				r_core_cmd_help_match (core, help_msg_fs, "fsr");
-			}
-			break;
-		case 's': // "fss"
-			flag_space_stack_list (core, input[2]);
-			break;
-		case '-': // "fs-"
-			switch (input[2]) {
-			case '*':
-				r_flag_space_unset (core->flags, NULL);
-				break;
-			case '.': {
-				const RSpace *sp = r_flag_space_cur (core->flags);
-				if (sp) {
-					r_flag_space_unset (core->flags, sp->name);
-				}
-				break;
-			}
-			case 0:
-				r_flag_space_pop (core->flags);
-				break;
-			default:
-				r_flag_space_unset (core->flags, r_str_trim_head_ro (input + 2));
-				break;
-			}
-			break;
-		case ' ':
-			{
-				char *name = r_str_trim_dup (input + 2);
-				r_str_trim (name);
-				r_flag_space_set (core->flags, name);
-				free (name);
-				break;
-			}
-		case 'm': // "fsm"
-			{
-				ut64 off = core->addr;
-				if (input[2] == ' ') {
-					off = r_num_math (core->num, input+2);
-				}
-				RFlagItem *f = r_flag_get_in (core->flags, off);
-				if (f) {
-					f->space = r_flag_space_cur (core->flags);
-				} else {
-					R_LOG_ERROR ("Cannot find any flag at 0x%"PFMT64x, off);
-				}
-				break;
-			}
-		case 'j':
-		case '\0':
-		case '*':
-		case 'q':
-			spaces_list (core, &core->flags->spaces, input[1]);
-			break;
-		default:
-			spaces_list (core, &core->flags->spaces, 0);
-			break;
-		}
+		cmd_flag_spaces (core, input);
 		break;
 	case 'g': // "fg"
 		if (input[1]) {
-			if (input[1] == ' ') {
+			if (input[1] == '?') {
+				r_core_cmd_help_contains (core, help_msg_f, "fg");
+			} else if (input[1] == ' ') {
 				r_core_cmdf (core, "&& %d", atoi (input + 2));
 			} else {
 				R_LOG_ERROR ("fg: wait for all backaground jobs to finish");
@@ -1701,6 +1862,9 @@ static int cmd_flag(void *data, const char *input) {
 		break;
 	case 'h': // "fh"
 		switch (input[1]) {
+		case '?':
+			r_core_cmd_help_contains (core, help_msg_f, "fh");
+			break;
 		case '*':
 			__flag_graph (core, r_str_trim_head_ro (input + 2), '*');
 			break;
@@ -1739,8 +1903,7 @@ static int cmd_flag(void *data, const char *input) {
 			ut64 addr = (input[1] && input[2] != '*' && input[2]) ? r_num_math (core->num, input + 2): core->addr;
 			RList *list_to_free = (input[1] && input[2] == '*')? r_flag_all_list (core->flags, false): NULL;
 			const RList *list = (input[1] && input[2] == '*')?
-				list_to_free
-				: r_flag_get_list (core->flags, addr);
+				list_to_free: r_flag_get_list (core->flags, addr);
 			r_list_foreach (list, iter, fi) {
 				r_flag_item_set_color (core->flags, fi, "");
 			}
@@ -1830,10 +1993,18 @@ static int cmd_flag(void *data, const char *input) {
 		}
 		break;
 	case 'o': // "fo"
-		r_core_fortune_print_random (core);
+		if (input[1] == '?') {
+			r_core_cmd_help_contains (core, help_msg_f, "fo");
+		} else {
+			r_core_fortune_print_random (core);
+		}
 		break;
 	case 'O': // "fO"
-		flag_ordinals (core, input + 1);
+		if (input[1] == '?') {
+			r_core_cmd_help_contains (core, help_msg_f, "fO");
+		} else {
+			flag_ordinals (core, input + 1);
+		}
 		break;
 	case 'r': // "fr"
 		if (input[1] == '?') {
@@ -1958,7 +2129,9 @@ static int cmd_flag(void *data, const char *input) {
 		}
 		break;
 	case 'i': // "fi"
-		if (input[1] == ' ' || (input[1] && input[2] == ' ')) {
+		if (input[1] == '?') {
+			r_core_cmd_help_contains (core, help_msg_f, "fi");
+		} else if (input[1] == ' ' || (input[1] && input[2] == ' ')) {
 			char *arg = strdup (r_str_trim_head_ro (input + 2));
 			if (*arg) {
 				char *sp = strchr (arg, ' ');

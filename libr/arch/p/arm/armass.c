@@ -1,4 +1,4 @@
-/* radare - LGPL - Copyright 2010-2023 - pancake */
+/* radare - LGPL - Copyright 2010-2025 - pancake */
 
 #include <stdio.h>
 #include <string.h>
@@ -122,6 +122,7 @@ static ArmOp ops[] = {
 	{ "smull", 0x9000c0e0, TYPE_MUL},
 	{ "umull", 0x900080e0, TYPE_MUL},
 	{ "smlal", 0x9000e0e0, TYPE_MUL},
+	{ "umlal", 0x9000a0e0, TYPE_MUL},
 	{ "smlabb", 0x800000e1, TYPE_MUL},
 	{ "smlabt", 0xc00000e1, TYPE_MUL},
 	{ "smlatb", 0xa00000e1, TYPE_MUL},
@@ -436,7 +437,6 @@ static ut32 itmask(char *input) {
 }
 
 static bool err;
-//decode str as number
 static ut64 getnum(const char *str) {
 	char *endptr;
 	err = false;
@@ -446,12 +446,21 @@ static ut64 getnum(const char *str) {
 		err = true;
 		return 0;
 	}
+	// Skip leading whitespace
+	str = r_str_trim_head_ro (str);
+	// Skip assembler immediate/hex prefixes
 	while (*str == '$' || *str == '#') {
 		str++;
 	}
 	val = strtoll (str, &endptr, 0);
-	if (str != endptr && *endptr == '\0') {
-		return val;
+	// Skip any trailing whitespace after the parsed number
+	if (endptr) {
+		while (*endptr && isspace ((unsigned char)*endptr)) {
+			endptr++;
+		}
+		if (str != endptr && *endptr == '\0') {
+			return val;
+		}
 	}
 	err = true;
 	return 0;
@@ -5978,8 +5987,188 @@ static int arm_assemble(ArmOpcode *ao, ut64 off, const char *str) {
 	int coproc, opc;
 	bool rex = false;
 	int shift, low, high;
+	/* Handle ARM-state MRS early (Rd <- PSR). Thumb variants are handled elsewhere. */
+	if (r_str_startswith (ao->op, "mrs")) {
+		cond = 14; // default AL
+		if (*(ao->op + 3)) {
+			int c = arm_cond (ao->op + 3);
+			if (c < 0) {
+				return 0;
+			}
+			cond = c;
+		}
+		if (!ao->a[0] || !ao->a[1]) {
+			return 0;
+		}
+		int rd = getreg (ao->a[0]);
+		if (rd < 0 || rd > 15) {
+			return 0;
+		}
+		r_str_case (ao->a[1], false);
+		ut32 o = 0;
+		/* Encode in little-endian layout like the rest of arm_assemble */
+		/* Low byte: cond in high nibble, opcode low nibble = 0x1 */
+		o |= (((ut32)cond & 0xF) << 4) | 0x1;
+		/* Next byte: PSR selector */
+		if (!strcmp (ao->a[1], "cpsr") || !strcmp (ao->a[1], "apsr")) {
+			o |= ((ut32)0x0f) << 8; /* CPSR/APSR */
+		} else if (!strcmp (ao->a[1], "spsr")) {
+			o |= ((ut32)0x4f) << 8; /* SPSR */
+		} else {
+			return 0;
+		}
+		/* Next byte (bits 23:20) high nibble: Rd */
+		o |= ((ut32)(rd & 0xF)) << 20;
+		ao->o = o;
+		return 1;
+	}
+	/* ARM-state MSR (PSR fields <- Rm) */
+	if (r_str_startswith (ao->op, "msr")) {
+		cond = 14; // default AL
+		if (*(ao->op + 3)) {
+			int c = arm_cond (ao->op + 3);
+			if (c < 0) {
+				return 0;
+			}
+			cond = c;
+		}
+		if (!ao->a[0] || !ao->a[1]) {
+			return 0;
+		}
+		r_str_case (ao->a[0], false);
+		int rm = getreg (ao->a[1]);
+		if (rm < 0 || rm > 15) {
+			return 0;
+		}
+		ut8 spsr = 0;
+		ut8 mask = interpret_msrbank (ao->a[0], &spsr) & 0xF;
+		if (!mask) {
+			/* Treat plain cpsr/spsr as FC (flags+control) to match disasm */
+			if (!strcmp (ao->a[0], "cpsr")) {
+				mask = 0x9;
+			} else if (!strcmp (ao->a[0], "spsr")) {
+				mask = 0x9;
+				spsr = 1;
+			} else {
+				return 0;
+			}
+		}
+		ut32 o = 0;
+		/* Byte3: cond in high nibble, low nibble 0x1 */
+		o |= (((ut32)cond & 0xF) << 4) | 0x1;
+		/* Byte2: PSR selector (CPSR=0xF0, SPSR=0xF4) */
+		o |= (spsr ? 0xF4 : 0xF0) << 16;
+		/* Byte1: 0x20 | field mask */
+		o |= ((ut32)(0x20 | (mask & 0xF))) << 8;
+		/* Byte0: Rm */
+		o |= (ut32)(rm & 0xF);
+		ao->o = o;
+		return 1;
+	}
+	/* ARM-state LDM/STM (multiple load/store) with addressing suffixes */
+	if (r_str_startswith (ao->op, "ldm") || r_str_startswith (ao->op, "stm")) {
+		bool is_ldm = r_str_startswith (ao->op, "ldm");
+		const char *mop = ao->op + 3; // after ldm/stm
+		/* Default IA if unspecified */
+		int P = 0, U = 1;
+		if (r_str_startswith (mop, "ia")) { P = 0; U = 1; }
+		else if (r_str_startswith (mop, "ib")) { P = 1; U = 1; }
+		else if (r_str_startswith (mop, "da")) { P = 0; U = 0; }
+		else if (r_str_startswith (mop, "db")) { P = 1; U = 0; }
+		/* Merge register list across commas if needed */
+		collect_list (ao);
+		/* parse writeback on Rn (rN!) */
+		int rn_wb = getregmembang (ao->a[0]);
+		int rn = (rn_wb >= 0) ? rn_wb : getreg (ao->a[0]);
+		if (rn < 0 || rn > 15) {
+			return 0;
+		}
+		st32 list = getreglist (ao->a[1]);
+		if (list < 0) {
+			return 0;
+		}
+		int W = (rn_wb >= 0) ? 1 : 0;
+		int L = is_ldm ? 1 : 0;
+		int cond = 14; /* default AL */
+		/* Build ARM word then swap to byte order expected by tests */
+		ut32 word = 0;
+		word |= ((ut32)cond & 0xF) << 28;
+		word |= 0x08000000; /* 100 at bits 27-25 */
+		word |= (P & 1) << 24;
+		word |= (U & 1) << 23;
+		/* S bit (bit 22) remains 0 */
+		word |= (W & 1) << 21;
+		word |= (L & 1) << 20;
+		word |= ((ut32)(rn & 0xF)) << 16;
+		word |= (ut32)(list & 0xFFFF);
+		ut8 b3 = (word >> 24) & 0xFF;
+		ut8 b2 = (word >> 16) & 0xFF;
+		ut8 b1 = (word >> 8) & 0xFF;
+		ut8 b0 = (word) & 0xFF;
+		ao->o = ((ut32)b0 << 24) | (((ut32)b1) << 16) | (((ut32)b2) << 8) | (((ut32)b3) );
+		return 1;
+	}
+	/* ARM-state PLD (preload data) */
+	if (r_str_startswith (ao->op, "pld")) {
+		/* Expect forms:
+		 *  - pld [Rn, #imm]
+		 *  - pld [Rn, Rm]
+		 */
+		if (!ao->a[0]) {
+			return 0;
+		}
+		/* Immediate form */
+		if (ao->a[1]) {
+			int rn = getregmemstart (ao->a[0]);
+			int imm = getnummemend (ao->a[1]);
+			if (!err) {
+				if (rn < 0 || rn > 15 || imm < -4095 || imm > 4095) {
+					return 0;
+				}
+				ut8 b3 = 0xF5;
+				ut8 b2 = (imm >= 0) ? 0xD0 : 0x50;
+				if (imm < 0) {
+					imm = -imm;
+				}
+				ut8 b1 = 0xF0 | ((imm >> 8) & 0xF);
+				ut8 b0 = imm & 0xFF;
+				b2 |= (rn & 0xF);
+				/* Swap to match test byte order */
+				ut32 o = ((ut32)b3) | (((ut32)b2) << 8) | (((ut32)b1) << 16) | (((ut32)b0) << 24);
+				ao->o = o;
+				return 1;
+			}
+			/* Register form */
+			err = false;
+			int rm = getregmemend (ao->a[1]);
+			int rn2 = getregmemstart (ao->a[0]);
+			if (err || rm < 0 || rm > 15 || rn2 < 0 || rn2 > 15) {
+				return 0;
+			}
+			ut8 b3 = 0xF7;
+			ut8 b2 = 0xD0 | (rn2 & 0xF);
+			ut8 b1 = 0xF0;
+			ut8 b0 = rm & 0xF;
+			/* Swap to match test byte order */
+			ut32 o = ((ut32)b3) | (((ut32)b2) << 8) | (((ut32)b1) << 16) | (((ut32)b0) << 24);
+			ao->o = o;
+			return 1;
+		}
+		/* pld [Rn] alias for immediate 0 */
+		int rn = getregmemstartend (ao->a[0]);
+		if (rn < 0 || rn > 15) {
+			return 0;
+		}
+		{
+			ut8 b3 = 0xF5, b2 = 0xD0 | (rn & 0xF), b1 = 0xF0, b0 = 0x00;
+			/* Swap to match test byte order */
+			ut32 o = ((ut32)b3) | (((ut32)b2) << 8) | (((ut32)b1) << 16) | (((ut32)b0) << 24);
+			ao->o = o;
+		}
+		return 1;
+	}
 	for (i = 0; ops[i].name; i++) {
-		if (!strncmp (ao->op, ops[i].name, strlen (ops[i].name))) {
+		if (r_str_startswith (ao->op, ops[i].name)) {
 			/* This can be useful when handling cases such as blt or ble
 			 * where strncmp might mistaken blt or ble as bl with conditional
 			 * t or e */
@@ -5997,7 +6186,7 @@ static int arm_assemble(ArmOpcode *ao, ut64 off, const char *str) {
 			if (ao->a[0] || ops[i].type == TYPE_BKP) {
 				switch (ops[i].type) {
 				case TYPE_MEM:
-					if (!strncmp (ops[i].name, "strex", 5)) {
+					if (r_str_startswith (ops[i].name, "strex")) {
 						rex = 1;
 					}
 					if (!strcmp (ops[i].name, "str") || !strcmp (ops[i].name, "ldr")) {
@@ -6321,7 +6510,7 @@ static int arm_assemble(ArmOpcode *ao, ut64 off, const char *str) {
 						ao->o |= high << 8;
 						ao->o |= a << 24;
 						ao->o |= b << 16;
-					} else if (!strncmp (ao->op, "smla", 4)) {
+					} else if (r_str_startswith (ao->op, "smla")) {
 						if (low > 14 || high > 14 || a > 14) {
 							return 0;
 						}

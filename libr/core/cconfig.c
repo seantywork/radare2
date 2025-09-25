@@ -686,9 +686,9 @@ static bool cb_asmcpu(void *user, void *data) {
 	}
 	r_arch_config_set_cpu (core->rasm->config, node->value);
 	const int v = r_anal_archinfo (core->anal, R_ARCH_INFO_CODE_ALIGN);
- 	if (v >= 0) {
- 		core->anal->config->codealign = v;
- 	}
+	if (v >= 0) {
+		core->anal->config->codealign = v;
+	}
 	r_config_set_i (core->config, "arch.codealign", (v != -1)? v: 0);
 	return true;
 }
@@ -907,6 +907,15 @@ static bool cb_flag_realnames(void *user, void *data) {
 	RCore *core = (RCore *) user;
 	RConfigNode *node = (RConfigNode *) data;
 	core->flags->realnames = node->i_value;
+	return true;
+}
+
+static bool cb_flag_autospace(void *user, void *data) {
+	RCore *core = (RCore *) user;
+	RConfigNode *node = (RConfigNode *) data;
+	if (core && core->flags) {
+		core->flags->autospace = node->i_value;
+	}
 	return true;
 }
 
@@ -1559,10 +1568,36 @@ static bool cb_cmdlog(void *user, void *data) {
 	return true;
 }
 
+static bool cb_defprefix(void *user, void *data) {
+	RCore *core = (RCore *) user;
+	RConfigNode *node = (RConfigNode *) data;
+	core->anal->opt.defprefix = node->value;
+	return true;
+}
+static bool cb_dynprefix(void *user, void *data) {
+	RCore *core = (RCore *) user;
+	RConfigNode *node = (RConfigNode *) data;
+	core->anal->opt.dynprefix = node->i_value;
+	return true;
+}
 static bool cb_cmdtimes(void *user, void *data) {
 	RCore *core = (RCore *) user;
 	RConfigNode *node = (RConfigNode *) data;
 	core->cmdtimes = node->value;
+	return true;
+}
+
+static bool cb_prefix_marker(void *user, void *data) {
+	RCore *core = (RCore *) user;
+	RConfigNode *node = (RConfigNode *) data;
+	core->anal->opt.prefix_marker = node->value;
+	return true;
+}
+
+static bool cb_prefix_radius(void *user, void *data) {
+	RCore *core = (RCore *) user;
+	RConfigNode *node = (RConfigNode *) data;
+	core->anal->opt.prefix_radius = (ut64) node->i_value;
 	return true;
 }
 
@@ -3390,9 +3425,9 @@ static bool cb_linesabs(void *user, void *data) {
 }
 
 static bool cb_malloc(void *user, void *data) {
- 	RCore *core = (RCore*) user;
- 	RConfigNode *node = (RConfigNode*) data;
- 	if (node->value) {
+	RCore *core = (RCore*) user;
+	RConfigNode *node = (RConfigNode*) data;
+	if (node->value) {
 		const char *valid[] = {
 			"glibc",
 			"macos",
@@ -3567,7 +3602,7 @@ R_API int r_core_config_init(RCore *core) {
 	cfg->num = core->num;
 	/* dir.prefix is used in other modules, set it first */
 	{
-		char *pfx = r_sys_getenv("R2_PREFIX");
+		char *pfx = r_sys_getenv ("R2_PREFIX");
 #if R2__WINDOWS__
 		const char *invoke_dir = r_sys_prefix (NULL);
 		if (!pfx && invoke_dir) {
@@ -3606,7 +3641,10 @@ R_API int r_core_config_init(RCore *core) {
 	/* anal */
 	SETB ("anal.onchange", "false", "automatically reanalyze function if any byte has changed (EXPERIMENTAL)");
 	SETI ("anal.fcnalign", 0,  "use ArchInfo.funcAlign if zero, otherwise override (used by aap and others)");
-	SETS ("anal.fcnprefix", "fcn",  "prefix new function names with this");
+	SETCB ("anal.prefix.default", "fcn", &cb_defprefix, "fallback prefix for function names");
+	SETCB ("anal.prefix.dynamic", "false", &cb_dynprefix, "enable dynamic prefix resolution");
+	SETCB ("anal.prefix.marker", "pfx.fcn.", &cb_prefix_marker, "flag name prefix to identify dynamic prefixes");
+	SETICB ("anal.prefix.radius", 0x1000, &cb_prefix_radius, "max distance to consider a flag as valid for prefix assignment");
 	const char *analcc = r_anal_cc_default (core->anal);
 	SETCB ("anal.cc", analcc? analcc: "", (RConfigCallback)&cb_analcc, "specify default calling convention");
 	const char *analsyscc = r_anal_syscc_default (core->anal);
@@ -3837,7 +3875,9 @@ R_API int r_core_config_init(RCore *core) {
 		"3 = realign at middle flag if sym.*", NULL);
 	SETDESC (n, "realign disassembly if there is a flag in the middle of an instruction");
 	SETCB ("asm.flags.real", "false", &cb_flag_realnames,
-	       "show flags' unfiltered realnames instead of names, except realnames from demangling");
+			"show flags' unfiltered realnames instead of names, except realnames from demangling");
+	SETCB ("cfg.autoflagspace", "false", &cb_flag_autospace,
+			"automatically assign flagspace based on registered name prefixes");
 	SETB ("asm.lbytes", "true", "align disasm bytes to left");
 	SETB ("asm.lines", "true", "show ASCII-art lines at disassembly");
 	SETB ("asm.lines.fcn", "true", "show function boundary lines");

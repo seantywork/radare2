@@ -1,8 +1,6 @@
 sdb_files = [
   '6502',
   '8051',
-  'LH5801', ## todo lowercase
-  'stm8',
   'arc',
   'arm',
   'avr',
@@ -15,6 +13,7 @@ sdb_files = [
   'i4004',
   'i8080',
   'java',
+  'LH5801', ## todo lowercase
   'lm32',
   'm68k',
   'mips',
@@ -25,12 +24,15 @@ sdb_files = [
   'propeller',
   'riscv',
   's390',
+  'sbpf',
   'sh',
   'sparc',
+  'stm8',
   'tms320',
   'tricore',
   'v810',
   'v850',
+  'vax',
   'x86',
   'xtensa',
   'z80',
@@ -52,13 +54,17 @@ opcodes_build_dir = join_paths(meson.current_build_dir())
 sdb_env = environment()
 sdb_env.set('SDB_OUTPUT_DIR', opcodes_build_dir)
 
-r_asm_d_sources = custom_target('opcodes-sdb',
-  input: [],
-  output: opcodes_sdb_files,
-  command: [sdb_exe, '-r', meson.current_source_dir()],
-  env: sdb_env,
-  depends: sdb_exe,
-  build_by_default: true,
-  install: true,
-  install_dir: join_paths(r2_sdb, 'opcodes')
-)
+if host_machine.system() != 'uefi'
+  r_asm_d_sources = custom_target('opcodes-sdb',
+    input: [],
+    output: opcodes_sdb_files,
+    command: [sdb_exe, '-r', meson.current_source_dir()],
+    env: sdb_env,
+    depends: sdb_exe,
+    build_by_default: true,
+    install: true,
+    install_dir: join_paths(r2_sdb, 'opcodes')
+  )
+else
+  r_asm_d_sources = []
+endif

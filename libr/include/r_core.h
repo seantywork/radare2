@@ -248,13 +248,14 @@ typedef struct r_core_visual_t {
 	int current3format;
 	int current4format;
 	int current5format;
-	RConfigHold *hold;  // TODO should be a tab-specific var
+	RConfigHold *hold; // TODO should be a tab-specific var
 	ut64 oldpc;
 	ut64 oseek;
 	char debugstr[512];
 
 	bool firstRun;
 	bool fromVisual;
+	bool fromVmatrix;
 	char *menus_Colors[128];
 	int discroll;
 	int mousemode;
@@ -900,6 +901,7 @@ R_API int r_core_rtr_gdb(RCore *core, int launch, const char *path);
 R_API int r_core_visual_prevopsz(RCore *core, ut64 addr);
 R_API void r_core_visual_config(RCore *core);
 R_API void r_core_visual_mounts(RCore *core);
+R_API void r_core_visual_matrix(RCore *core);
 R_API void r_core_visual_anal(RCore *core, const char *input);
 R_API void r_core_visual_debugtraces(RCore *core, const char *input);
 R_API void r_core_seek_next(RCore *core, const char *type);

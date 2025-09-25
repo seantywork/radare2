@@ -6,9 +6,45 @@
 
 R_LIB_VERSION(r_anal);
 
+#define DEFAULT_FCNPREFIX_RADIUS 0x1000
+
 static RAnalPlugin *anal_static_plugins[] = {
 	R_ANAL_STATIC_PLUGINS
 };
+
+static const char *r_anal_choose_fcnprefix(RAnal *anal, ut64 addr) {
+	R_RETURN_VAL_IF_FAIL (anal, "fcn");
+
+	const char *defpfx = anal->opt.defprefix;
+	if (R_STR_ISEMPTY (defpfx)) {
+		defpfx = "fcn";
+	}
+	if (!anal->opt.dynprefix || !anal->flb.f) {
+		return defpfx;
+	}
+	if (!anal->flb.f) {
+		return defpfx;
+	}
+	const char *marker = anal->opt.prefix_marker;
+	if (R_STR_ISEMPTY (marker)) {
+		marker = "pfx.fcn.";
+	}
+	ut64 radius = anal->opt.prefix_radius ? anal->opt.prefix_radius : DEFAULT_FCNPREFIX_RADIUS;
+#if 0
+	RFlagItem *fi = r_flag_closest_in_space (anal->flb.f, "prefix", addr, radius);
+	if (fi && !r_str_startswith (fi->name, marker)) {
+		return defpfx;
+	}
+#else
+	// Find closest flag in "prefix" space and validate marker
+	RFlagItem *fi = r_flag_closest_with_prefix (anal->flb.f, marker, addr, radius);
+#endif
+	if (!fi || R_STR_ISEMPTY (fi->name)) {
+		return defpfx;
+	}
+	const char *suffix = fi->name + strlen (marker);
+	return *suffix? suffix: defpfx;
+}
 
 R_API void r_anal_set_limits(RAnal *anal, ut64 from, ut64 to) {
 	free (anal->limit);
@@ -401,7 +437,6 @@ R_API void r_anal_purge(RAnal *anal) {
 	r_anal_purge_imports (anal);
 }
 
-
 static int default_archinfo(int res, int q) {
 	if (res < 1) {
 		return 1;
@@ -514,7 +549,7 @@ R_API bool r_anal_noreturn_add(RAnal *anal, const char * R_NULLABLE name, ut64 a
 		tmp_name = fcn ? fcn->name: fi->name;
 		if (fcn) {
 			if (!fcn->is_noreturn) {
-  				fcn->is_noreturn = true;
+				fcn->is_noreturn = true;
 				R_DIRTY_SET (anal);
 			}
 		}
@@ -664,18 +699,22 @@ R_API bool r_anal_noreturn_at(RAnal *anal, ut64 addr) {
 	return false;
 }
 
+R_API const char * R_NONNULL r_anal_fcn_prefix_at(RAnal *anal, ut64 addr) {
+	R_RETURN_VAL_IF_FAIL (anal, "fcn");
+	return r_anal_choose_fcnprefix (anal, addr);
+}
+
 R_API void r_anal_bind(RAnal *anal, RAnalBind *b) {
-	if (b) {
-		b->anal = anal;
-		b->get_fcn_in = r_anal_get_fcn_in;
-		b->get_hint = r_anal_hint_get;
-		b->encode = (RAnalEncode)r_anal_opasm; // TODO rename to encode.. and use r_arch_encode when all plugs are moved
-		b->decode = (RAnalDecode)r_anal_op; // TODO rename to decode
-		b->opinit = r_anal_op_init;
-		b->mnemonics = r_anal_mnemonics;
-		b->opfini = r_anal_op_fini;
-		b->use = r_anal_use;
-	}
+	R_RETURN_IF_FAIL (anal && b);
+	b->anal = anal;
+	b->get_fcn_in = r_anal_get_fcn_in;
+	b->get_hint = r_anal_hint_get;
+	b->encode = (RAnalEncode)r_anal_opasm; // TODO rename to encode.. and use r_arch_encode when all plugs are moved
+	b->decode = (RAnalDecode)r_anal_op; // TODO rename to decode
+	b->opinit = r_anal_op_init;
+	b->mnemonics = r_anal_mnemonics;
+	b->opfini = r_anal_op_fini;
+	b->use = r_anal_use;
 }
 
 R_API RList *r_anal_preludes(RAnal *anal) {

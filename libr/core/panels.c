@@ -646,7 +646,7 @@ static void __set_decompiler_cache(RCore *core, char *s) {
 
 static void __set_read_only(RCore *core, RPanel *p, const char * R_NULLABLE s) {
 	free (p->model->readOnly);
-	p->model->readOnly = R_STR_DUP (s);
+	p->model->readOnly = s? strdup (s): NULL;
 	__set_dcb (core, p);
 	__set_pcb (p);
 }
@@ -1320,7 +1320,9 @@ static int __add_cmdf_panel(RCore *core, char *input, char *str) {
 	__adjust_side_panels (core);
 	__insert_panel (core, 0, child->name, "");
 	RPanel *p0 = __get_panel (panels, 0);
-	__set_geometry (&p0->view->pos, 0, 1, PANEL_CONFIG_SIDEPANEL_W, h - 1);
+	if (h > 1) {
+		__set_geometry (&p0->view->pos, 0, 1, PANEL_CONFIG_SIDEPANEL_W, h - 1);
+	}
 	char *cmdf = __load_cmdf (core, p0, input, str);
 	__set_cmd_str_cache (core, p0, cmdf);
 	free (cmdf);
@@ -2478,6 +2480,12 @@ static void __init_all_dbs(RCore *core) {
 }
 
 static RConsCanvas *__create_new_canvas(RCore *core, int w, int h) {
+	if (w < 1) {
+		w = 1;
+	}
+	if (h < 1) {
+		h = 1;
+	}
 	RConsCanvas *can = r_cons_canvas_new (core->cons, w, h, -2);
 	if (!can) {
 		return false;
@@ -2532,7 +2540,7 @@ static bool __init(RCore *core, RPanels *panels, int w, int h) {
 	panels->prevMode = PANEL_MODE_DEFAULT;
 	panels->name = NULL;
 
-	if (w < 140) {
+	if (w > 0 && w < 140) {
 		panels->columnWidth = w / 3;
 	}
 	return true;
@@ -2542,6 +2550,12 @@ static RPanels *__panels_new(RCore *core) {
 	RPanels *panels = R_NEW0 (RPanels);
 	int h, w = r_cons_get_size (core->cons, &h);
 	core->visual.firstRun = true;
+	if (w < 1) {
+		w = 1;
+	}
+	if (h < 1) {
+		h = 1;
+	}
 	if (!__init (core, panels, w, h)) {
 		free (panels);
 		return NULL;
@@ -4465,6 +4479,12 @@ static void __move_panel_to_left(RCore *core, RPanel *panel, int src) {
 	__shrink_panels_backward (core, src);
 	panels->panel[0] = panel;
 	int h, w = r_cons_get_size (core->cons, &h);
+	if (w < 1) {
+		w = 1;
+	}
+	if (h < 1) {
+		h = 1;
+	}
 	int p_w = w - panels->columnWidth;
 	p_w /= 2;
 	int new_w = w - p_w;
@@ -4472,6 +4492,7 @@ static void __move_panel_to_left(RCore *core, RPanel *panel, int src) {
 	int i = 1;
 	for (; i < panels->n_panels; i++) {
 		RPanel *tmp = __get_panel (panels, i);
+		/* w is clamped to >= 1 above, so no ternary needed */
 		int t_x = (int)(((double)tmp->view->pos.x / (double)w) * (double)new_w + p_w);
 		int t_w = (int)(((double)tmp->view->pos.w / (double)w) * (double)new_w + 1);
 		__set_geometry (&tmp->view->pos, t_x, tmp->view->pos.y, t_w, tmp->view->pos.h);
@@ -4485,6 +4506,12 @@ static void __move_panel_to_right(RCore *core, RPanel *panel, int src) {
 	__shrink_panels_forward (core, src);
 	panels->panel[panels->n_panels - 1] = panel;
 	int h, w = r_cons_get_size (core->cons, &h);
+	if (w < 1) {
+		w = 1;
+	}
+	if (h < 1) {
+		h = 1;
+	}
 	int p_w = w - panels->columnWidth;
 	p_w /= 2;
 	int p_x = w - p_w;
@@ -4493,8 +4520,8 @@ static void __move_panel_to_right(RCore *core, RPanel *panel, int src) {
 	int i = 0;
 	for (; i < panels->n_panels - 1; i++) {
 		RPanel *tmp = __get_panel (panels, i);
-		int t_x = (int)(((double)tmp->view->pos.x / (double)w) * (double)new_w);
-		int t_w = (int)(((double)tmp->view->pos.w / (double)w) * (double)new_w + 1);
+		int t_x = (int)(((double)tmp->view->pos.x / (double)(w)) * (double)new_w);
+		int t_w = (int)(((double)tmp->view->pos.w / (double)(w)) * (double)new_w + 1);
 		__set_geometry (&tmp->view->pos, t_x, tmp->view->pos.y, t_w, tmp->view->pos.h);
 	}
 	__fix_layout (core);
@@ -4506,14 +4533,20 @@ static void __move_panel_to_up(RCore *core, RPanel *panel, int src) {
 	__shrink_panels_backward (core, src);
 	panels->panel[0] = panel;
 	int h, w = r_cons_get_size (core->cons, &h);
+	if (w < 1) {
+		w = 1;
+	}
+	if (h < 1) {
+		h = 1;
+	}
 	int p_h = h / 2;
 	int new_h = h - p_h;
 	__set_geometry (&panel->view->pos, 0, 1, w, p_h - 1);
 	int i = 1;
 	for (; i < panels->n_panels; i++) {
 		RPanel *tmp = __get_panel (panels, i);
-		int t_y = (int)(((double)tmp->view->pos.y / (double)h) * (double)new_h + p_h);
-		int t_h = (int)(((double)tmp->view->pos.h / (double)h) * (double)new_h + 1);
+		int t_y = (int)(((double)tmp->view->pos.y / (double)(h)) * (double)new_h + p_h);
+		int t_h = (int)(((double)tmp->view->pos.h / (double)(h)) * (double)new_h + 1);
 		__set_geometry (&tmp->view->pos, tmp->view->pos.x, t_y, tmp->view->pos.w, t_h);
 	}
 	__fix_layout (core);
@@ -4525,14 +4558,20 @@ static void __move_panel_to_down(RCore *core, RPanel *panel, int src) {
 	__shrink_panels_forward (core, src);
 	panels->panel[panels->n_panels - 1] = panel;
 	int h, w = r_cons_get_size (core->cons, &h);
+	if (w < 1) {
+		w = 1;
+	}
+	if (h < 1) {
+		h = 1;
+	}
 	int p_h = h / 2;
 	int new_h = h - p_h;
 	__set_geometry (&panel->view->pos, 0, new_h, w, p_h);
 	size_t i = 0;
 	for (; i < panels->n_panels - 1; i++) {
 		RPanel *tmp = __get_panel (panels, i);
-		const size_t t_y = (tmp->view->pos.y * new_h / h)  + 1;
-		const size_t t_h = (tmp->view->edge & (1 << PANEL_EDGE_BOTTOM)) ?  new_h - t_y : (tmp->view->pos.h * new_h / h) ;
+		const size_t t_y = (tmp->view->pos.y * new_h / h) + 1;
+		const size_t t_h = (tmp->view->edge & (1 << PANEL_EDGE_BOTTOM)) ? new_h - t_y : (tmp->view->pos.h * new_h / h);
 		__set_geometry (&tmp->view->pos, tmp->view->pos.x, t_y, tmp->view->pos.w, t_h);
 	}
 	__fix_layout (core);
@@ -4634,7 +4673,17 @@ static void __call_visual_graph(RCore *core) {
 		r_config_set_i (core->config, "scr.color", ocolor);
 
 		int h, w = r_cons_get_size (core->cons, &h);
-		h -= r_config_get_i (core->config, "scr.notch");
+		if (h > 0) {
+			const int notch = r_config_get_i (core->config, "scr.notch");
+			if (h > notch) {
+				h -= notch;
+			}
+		} else {
+			h = 1;
+		}
+		if (w < 1) {
+			w = 1;
+		}
 		panels->can = __create_new_canvas (core, w, h);
 	}
 }
@@ -4704,7 +4753,7 @@ static void __print_decompiler_cb(void *user, void *p) {
 	return;
 #if 0
 	if (core->panels_root->cur_pdc_cache) {
-		cmdstr = R_STR_DUP ((char *)sdb_ptr_get (core->panels_root->cur_pdc_cache,
+		cmdstr = strdup ((char *)sdb_ptr_get (core->panels_root->cur_pdc_cache,
 					r_num_as_string (NULL, func->addr, false), 0));
 		if (R_STR_ISNOTEMPTY (cmdstr)) {
 			__set_cmd_str_cache (core, panel, cmdstr);
@@ -4773,7 +4822,17 @@ static void __do_panels_resize(RCore *core) {
 	RPanels *panels = core->panels;
 	int i;
 	int h, w = r_cons_get_size (core->cons, &h);
-	h -= r_config_get_i (core->config, "scr.notch");
+	if (h > 0) {
+		const int notch = r_config_get_i (core->config, "scr.notch");
+		if (h > notch) {
+			h -= notch;
+		}
+	} else {
+		h = 1;
+	}
+	if (w < 1) {
+		w = 1;
+	}
 	for (i = 0; i < panels->n_panels; i++) {
 		RPanel *panel = __get_panel (panels, i);
 		if ((panel->view->edge & (1 << PANEL_EDGE_BOTTOM))
@@ -5258,7 +5317,7 @@ static void __add_menu(RCore *core, const char *parent, const char *name, RPanel
 	}
 	item->n_sub = 0;
 	item->selectedIndex = 0;
-	item->name = R_STR_DUP (name);
+	item->name = strdup (name);
 	item->sub = NULL;
 	item->cb = cb;
 	item->p = R_NEW0 (RPanel);
@@ -7607,10 +7666,10 @@ R_API bool r_core_panels_root(RCore *core, RPanelsRoot *panels_root) {
 		}
 		const char *pdc_now = r_config_get (core->config, "cmd.pdc");
 		if (sdb_exists (panels_root->pdc_caches, pdc_now)) {
-			panels_root->cur_pdc_cache = sdb_ptr_get (panels_root->pdc_caches, R_STR_DUP (pdc_now), 0);
+			panels_root->cur_pdc_cache = sdb_ptr_get (panels_root->pdc_caches, strdup (pdc_now), 0);
 		} else {
 			Sdb *sdb = sdb_new0();
-			sdb_ptr_set (panels_root->pdc_caches, R_STR_DUP (pdc_now), sdb, 0);
+			sdb_ptr_set (panels_root->pdc_caches, strdup (pdc_now), sdb, 0);
 			panels_root->cur_pdc_cache = sdb;
 		}
 	}

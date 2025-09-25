@@ -43,8 +43,9 @@ typedef struct r_flag_item_meta_t {
 typedef struct r_flag_item_t {
 	ut32 id;        /* unique identifier, maybe use ut64? */
 	char *name;     /* unique name, escaped to avoid issues with r2 shell */
-	char *realname; /* real name, without any escaping */
-	bool demangled; /* real name from demangling? .. maybe we can embed this into realname */
+	char *realname; /* real demangled, display name, without any escaping */
+	char *rawname; /* real name, without any escaping */
+	bool demangled; /* real name from demangling? */
 	ut64 addr;      /* address of the flag */
 	ut64 size;      /* size of the flag item */
 	RSpace *space;  /* flag space this item belongs to */
@@ -55,6 +56,7 @@ typedef struct r_flag_t {
 	RSpaces spaces;   /* handle flag spaces */
 	st64 base;         /* base address for all flag items */
 	bool realnames;
+	bool autospace;    /* auto-assign flagspace by name prefix */
 	Sdb *tags;
 	RNum *num;
 	RSkipList *by_addr; /* flags sorted by addr, value=RFlagsAtOffset */
@@ -118,6 +120,8 @@ R_API RFlagItem *r_flag_get(RFlag *f, const char *name);
 R_API RFlagItem *r_flag_get_in(RFlag *f, ut64 addr);
 R_API RFlagItem *r_flag_get_by_spaces(RFlag *f, bool prionospace, ut64 addr, ...);
 R_API RFlagItem *r_flag_get_at(RFlag *f, ut64 addr, bool closest);
+R_API RFlagItem *r_flag_closest_in_space(RFlag *f, const char *space, ut64 addr, ut64 radius);
+R_API RFlagItem *r_flag_closest_with_prefix(RFlag *f, const char *pfx, ut64 addr, ut64 radius);
 R_API RList *r_flag_all_list(RFlag *f, bool by_space);
 R_API const RList* /*<RFlagItem*>*/ r_flag_get_list(RFlag *f, ut64 addr);
 R_API char *r_flag_get_liststr(RFlag *f, ut64 addr);

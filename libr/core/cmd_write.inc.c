@@ -530,7 +530,12 @@ static void cmd_write_value_float(RCore *core, const char *input) {
 
 static void cmd_write_value_long_double(RCore *core, const char *input) {
 	long double v = 0.0;
+#if R2_NO_LONG_DOUBLE
+	double tmp = strtod (input, NULL);
+	v = (long double)tmp;
+#else
 	sscanf (input, "%Lf", &v);
+#endif
 	r_io_write_at (core->io, core->addr, (const ut8*)&v, sizeof (long double));
 }
 
@@ -1425,9 +1430,14 @@ static void cmd_wcf(RCore *core, const char *dfn) {
 		R_LOG_ERROR ("Cache is empty");
 		return;
 	}
-	size_t sfs;
-	ut8 *sfb = (ut8*)r_file_slurp (sfn, &sfs);
-	if (sfb) {
+	ut64 sfs = r_io_desc_size (core->io->desc);
+	ut8 *sfb = malloc (sfs);
+	if (!sfb) {
+		R_LOG_ERROR ("Cannot allocate %"PFMT64d" descsize", sfs);
+		return;
+	}
+	int res = r_io_pread_at (core->io, 0, sfb, sfs);
+	if (res > 0) {
 		void **iter;
 		r_pvector_foreach (layer->vec, iter) {
 			RIOCacheItem *c = *iter;
@@ -1442,8 +1452,10 @@ static void cmd_wcf(RCore *core, const char *dfn) {
 		}
 		// patch buffer
 		r_file_dump (dfn, sfb, sfs, false);
-		free (sfb);
+	} else {
+		R_LOG_ERROR ("Cannot read source data");
 	}
+	free (sfb);
 	free (sfn);
 }
 
@@ -1626,6 +1638,9 @@ static int cmd_wc(void *data, const char *input) {
 		break;
 	case 's': // "wcs" -- write cache squash
 		squash_write_cache (core, input + 1);
+		break;
+	default:
+		r_core_return_invalid_command (core, "wc", input[0]);
 		break;
 	}
 	return 0;
