@@ -1,9 +1,10 @@
-/* radare - LGPL - Copyright 2019-2024 - GustavoLCR */
+/* radare - LGPL - Copyright 2019-2025 - GustavoLCR */
 
 #include "ne.h"
 
 static char *__get_target_os(r_bin_ne_obj_t *bin) {
-	switch (bin->ne_header->targOS) {
+	const int targetOS = (bin->ne_header) ? bin->ne_header->targOS: 0;
+	switch (targetOS) {
 	case 1:
 		return "OS/2";
 	case 2:
@@ -77,15 +78,12 @@ static char *__func_name_from_ord(const char *module, ut16 ordinal) {
 
 RList *r_bin_ne_get_segments(r_bin_ne_obj_t *bin) {
 	int i;
-	if (!bin || !bin->segment_entries) {
+	if (!bin || !bin->segment_entries || !bin->ne_header) {
 		return NULL;
 	}
 	RList *segments = r_list_newf (free);
 	for (i = 0; i < bin->ne_header->SegCount; i++) {
 		RBinSection *bs = R_NEW0 (RBinSection);
-		if (!bs) {
-			return segments;
-		}
 		NE_image_segment_entry *se = &bin->segment_entries[i];
 		bs->size = se->length;
 		bs->vsize = se->minAllocSz ? se->minAllocSz : 64000;
@@ -107,6 +105,9 @@ static int __find_symbol_by_paddr(const void *paddr, const void *sym) {
 
 RList *r_bin_ne_get_symbols(r_bin_ne_obj_t *bin) {
 	RBinSymbol *sym;
+	if (!bin->ne_header) {
+		return NULL;
+	}
 	ut16 off = bin->ne_header->ResidNamTable + bin->header_offset;
 	RList *symbols = r_list_newf (free);
 	if (!symbols) {
@@ -138,9 +139,6 @@ RList *r_bin_ne_get_symbols(r_bin_ne_obj_t *bin) {
 		name[sz] = '\0';
 		off += sz;
 		sym = R_NEW0 (RBinSymbol);
-		if (!sym) {
-			break;
-		}
 		sym->name = r_bin_name_new_from (name);
 		if (!first) {
 			sym->bind = R_BIN_BIND_GLOBAL_STR;
@@ -163,9 +161,6 @@ RList *r_bin_ne_get_symbols(r_bin_ne_obj_t *bin) {
 	r_list_foreach (entries, it, en) {
 		if (!r_list_find (symbols, &en->paddr, __find_symbol_by_paddr)) {
 			sym = R_NEW0 (RBinSymbol);
-			if (!sym) {
-				break;
-			}
 			sym->name = r_bin_name_new_from (r_str_newf ("entry%d", i - 1));
 			sym->paddr = en->paddr;
 			sym->bind = R_BIN_BIND_GLOBAL_STR;
@@ -179,78 +174,37 @@ RList *r_bin_ne_get_symbols(r_bin_ne_obj_t *bin) {
 }
 
 static char *__resource_type_str(int type) {
-	char *typeName;
-	switch (type) {
-	case 1:
-		typeName = "CURSOR";
-		break;
-	case 2:
-		typeName = "BITMAP";
-		break;
-	case 3:
-		typeName = "ICON";
-		break;
-	case 4:
-		typeName = "MENU";
-		break;
-	case 5:
-		typeName = "DIALOG";
-		break;
-	case 6:
-		typeName = "STRING";
-		break;
-	case 7:
-		typeName = "FONTDIR";
-		break;
-	case 8:
-		typeName = "FONT";
-		break;
-	case 9:
-		typeName = "ACCELERATOR";
-		break;
-	case 10:
-		typeName = "RCDATA";
-		break;
-	case 11:
-		typeName = "MESSAGETABLE";
-		break;
-	case 12:
-		typeName = "GROUP_CURSOR";
-		break;
-	case 14:
-		typeName = "GROUP_ICON";
-		break;
-	case 15:
-		typeName = "NAMETABLE";
-		break;
-	case 16:
-		typeName = "VERSION";
-		break;
-	case 17:
-		typeName = "DLGINCLUDE";
-		break;
-	case 19:
-		typeName = "PLUGPLAY";
-		break;
-	case 20:
-		typeName = "VXD";
-		break;
-	case 21:
-		typeName = "ANICURSOR";
-		break;
-	case 22:
-		typeName = "ANIICON";
-		break;
-	case 23:
-		typeName = "HTML";
-		break;
-	case 24:
-		typeName = "MANIFEST";
-		break;
-	default:
-		return r_str_newf ("UNKNOWN (%d)", type);
+	static const char *names[] = {
+		/*  0 */ NULL,
+		/*  1 */ "CURSOR",
+		/*  2 */ "BITMAP",
+		/*  3 */ "ICON",
+		/*  4 */ "MENU",
+		/*  5 */ "DIALOG",
+		/*  6 */ "STRING",
+		/*  7 */ "FONTDIR",
+		/*  8 */ "FONT",
+		/*  9 */ "ACCELERATOR",
+		/* 10 */ "RCDATA",
+		/* 11 */ "MESSAGETABLE",
+		/* 12 */ "GROUP_CURSOR",
+		/* 13 */ NULL,
+		/* 14 */ "GROUP_ICON",
+		/* 15 */ "NAMETABLE",
+		/* 16 */ "VERSION",
+		/* 17 */ "DLGINCLUDE",
+		/* 18 */ NULL,
+		/* 19 */ "PLUGPLAY",
+		/* 20 */ "VXD",
+		/* 21 */ "ANICURSOR",
+		/* 22 */ "ANIICON",
+		/* 23 */ "HTML",
+		/* 24 */ "MANIFEST"
+	};
+	if ((unsigned)type < (sizeof names / sizeof names[0]) && names[type]) {
+		return strdup (names[type]);
 	}
-	return strdup (typeName);
+	return r_str_newf("UNKNOWN (%d)", type);
 }
 
 static void __free_resource_entry(void *entry) {
@@ -267,8 +221,14 @@ static void __free_resource(void *resource) {
 }
 
 static bool __ne_get_resources(r_bin_ne_obj_t *bin) {
+	if (!bin || !bin->ne_header) {
+		return false;
+	}
 	if (!bin->resources) {
 		bin->resources = r_list_newf (__free_resource);
+		if (!bin->resources) {
+			return false;
+		}
 	}
 	ut16 resoff = bin->ne_header->ResTableOffset + bin->header_offset;
 	ut16 alignment = r_buf_read_le16_at (bin->buf, resoff);
@@ -276,9 +236,6 @@ static bool __ne_get_resources(r_bin_ne_obj_t *bin) {
 	while (true) {
 		NE_image_typeinfo_entry ti = {0};
 		r_ne_resource *res = R_NEW0 (r_ne_resource);
-		if (!res) {
-			break;
-		}
 		res->entry = r_list_newf (__free_resource_entry);
 		if (!res->entry) {
 			break;
@@ -297,9 +254,6 @@ static bool __ne_get_resources(r_bin_ne_obj_t *bin) {
 		for (i = 0; i < ti.rtResourceCount; i++) {
 			NE_image_nameinfo_entry ni;
 			r_ne_resource_entry *ren = R_NEW0 (r_ne_resource_entry);
-			if (!ren) {
-				break;
-			}
 			r_buf_fread_at (bin->buf, off, (ut8 *)&ni, "6s", 1);
 			ren->offset = ni.rnOffset << alignment;
 			ren->size = ni.rnLength;
@@ -318,17 +272,14 @@ static bool __ne_get_resources(r_bin_ne_obj_t *bin) {
 }
 
 RList *r_bin_ne_get_imports(r_bin_ne_obj_t *bin) {
-	RList *imports = r_list_newf ((RListFree)r_bin_import_free);
-	if (!imports) {
+	if (!bin->ne_header) {
 		return NULL;
 	}
+	RList *imports = r_list_newf ((RListFree)r_bin_import_free);
 	ut16 off = bin->ne_header->ImportNameTable + bin->header_offset + 1;
 	int i;
 	for (i = 0; i < bin->ne_header->ModRefs; i++) {
 		RBinImport *imp = R_NEW0 (RBinImport);
-		if (!imp) {
-			break;
-		}
 		ut8 sz = r_buf_read8_at (bin->buf, off);
 		if (!sz) {
 			r_bin_import_free (imp);
@@ -351,13 +302,10 @@ RList *r_bin_ne_get_imports(r_bin_ne_obj_t *bin) {
 }
 
 RList *r_bin_ne_get_entrypoints(r_bin_ne_obj_t *bin) {
-	if (!bin->entry_table) {
+	if (!bin->entry_table || !bin->ne_header) {
 		return NULL;
 	}
 	RList *entries = r_list_newf (free);
-	if (!entries) {
-		return NULL;
-	}
 	RList *segments = r_bin_ne_get_segments (bin);
 	if (!segments) {
 		r_list_free (entries);
@@ -438,7 +386,7 @@ RList *r_bin_ne_get_entrypoints(r_bin_ne_obj_t *bin) {
 
 RList *r_bin_ne_get_relocs(r_bin_ne_obj_t *bin) {
 	RList *segments = bin->segments;
-	if (!segments) {
+	if (!segments || !bin->ne_header) {
 		return NULL;
 	}
 	RList *entries = bin->entries;
@@ -597,9 +545,6 @@ RList *r_bin_ne_get_relocs(r_bin_ne_obj_t *bin) {
 void __init(RBuffer *buf, r_bin_ne_obj_t *bin) {
 	bin->header_offset = r_buf_read_le16_at (buf, 0x3c);
 	bin->ne_header = R_NEW0 (NE_image_header);
-	if (!bin->ne_header) {
-		return;
-	}
 	bin->buf = buf;
 	if (r_buf_fread_at (buf, bin->header_offset, (ut8 *)bin->ne_header, "4c2si4c4si8si3s2c3s2c", 1) < 1) {
 		R_FREE (bin->ne_header);
@@ -657,9 +602,6 @@ void r_bin_ne_free(r_bin_ne_obj_t *bin) {
 
 r_bin_ne_obj_t *r_bin_ne_new_buf(RBuffer *buf, bool verbose) {
 	r_bin_ne_obj_t *bin = R_NEW0 (r_bin_ne_obj_t);
-	if (!bin) {
-		return NULL;
-	}
-	__init(buf, bin);
+	__init (buf, bin);
 	return bin;
 }

@@ -2531,9 +2531,9 @@ static void esilmemrefs(RCore *core, const char *expr) {
 }
 
 static void core_anal_bytes(RCore *core, const ut8 *buf, int len, int nops, int fmt) {
-	bool be = R_ARCH_CONFIG_IS_BIG_ENDIAN (core->rasm->config);
+	const bool be = R_ARCH_CONFIG_IS_BIG_ENDIAN (core->rasm->config);
 	bool use_color = core->print->flags & R_PRINT_FLAGS_COLOR;
-	core->rasm->parse->subrel = r_config_get_i (core->config, "asm.sub.rel");
+	core->rasm->parse->subrel = r_config_get_b (core->config, "asm.sub.rel");
 	int ret, i, j, idx, size;
 	const char *color = "";
 	const char *esilstr;
@@ -2643,6 +2643,8 @@ static void core_anal_bytes(RCore *core, const ut8 *buf, int len, int nops, int 
 			char *strsub = r_asm_parse_subvar (core->rasm, NULL,
 				core->addr + idx, asmop.size, asmop.mnemonic);
 			ut64 killme = UT64_MAX;
+			ut64 osubreladdr = core->rasm->parse->subrel_addr;
+
 			if (r_io_read_i (core->io, op.ptr, &killme, op.refptr, be)) {
 				core->rasm->parse->subrel_addr = killme;
 			}
@@ -2814,6 +2816,7 @@ static void core_anal_bytes(RCore *core, const ut8 *buf, int len, int nops, int 
 			}
 			pj_ks (pj, "family", r_anal_op_family_tostring (op.family));
 			pj_end (pj);
+			core->rasm->parse->subrel_addr = osubreladdr;
 		} else if (fmt == 'r') {
 			if (R_STR_ISNOTEMPTY (esilstr)) {
 				if (use_color) {
@@ -2833,6 +2836,7 @@ static void core_anal_bytes(RCore *core, const ut8 *buf, int len, int nops, int 
 				R_LOG_ERROR ("invalid");
 				break;
 			}
+			ut64 osubreladdr = core->rasm->parse->subrel_addr;
 			char *disasm = r_asm_parse_subvar (core->rasm, NULL,
 				core->addr + idx,
 				asmop.size, text);
@@ -2843,6 +2847,7 @@ static void core_anal_bytes(RCore *core, const ut8 *buf, int len, int nops, int 
 			if (r_io_read_i (core->io, op.ptr, &killme, op.refptr, be)) {
 				core->rasm->parse->subrel_addr = killme;
 			}
+				core->rasm->parse->subrel_addr = UT64_MAX;
 			if (disasm) {
 				char *disasm2 = r_asm_parse_filter (core->rasm, addr, core->flags, hint, disasm);
 				if (disasm2) {
@@ -3019,8 +3024,9 @@ static void core_anal_bytes(RCore *core, const ut8 *buf, int len, int nops, int 
 			if (op.stackptr) {
 				printline ("stackptr", "%"PFMT64u"\n", op.stackptr);
 			}
+			core->rasm->parse->subrel_addr = osubreladdr;
 		}
-		//r_cons_printf (core->cons, "false: 0x%08"PFMT64x"\n", core->addr+idx);
+		//r_cons_printf (core->cons, "false: 0x%08"PFMT64x"\n", core->addr + idx);
 		//free (hint);
 		free (mnem);
 		r_anal_hint_free (hint);
@@ -9555,7 +9561,10 @@ static void cmd_anal_opcode_bits(RCore *core, const char *arg, int mode) {
 	r_anal_op_init (&analop);
 	r_anal_op_set_bytes (&analop, core->addr, buf, sizeof (ut64));
 	(void)r_anal_op (core->anal, &analop, core->addr, buf, sizeof (buf), R_ARCH_OP_MASK_DISASM);
-	int last = R_MIN (8, analop.size);
+	int last = R_MIN (sizeof (buf), analop.size);
+	if (analop.size > sizeof (buf)) {
+		R_LOG_WARN ("Instruction size (%d bytes) exceeds buffer limit (%zu bytes), truncating", analop.size, sizeof (buf));
+	}
 	PJ *pj = (mode == 'j')? r_core_pj_new (core): NULL;
 	if (last < 1) {
 		return;
@@ -9662,7 +9671,7 @@ static void cmd_anal_opcode_bits(RCore *core, const char *arg, int mode) {
 			int pi = 0;
 			char *s = r_strbuf_drain (sb);
 			char *p = s;
-			ut8 finalmask[8] = {0};
+			ut8 finalmask[32] = {0};
 			for (; *p; p++) {
 				int byte_index = (pi / 8);
 				int bit_index = (pi % 8);
@@ -9679,7 +9688,7 @@ static void cmd_anal_opcode_bits(RCore *core, const char *arg, int mode) {
 				}
 			}
 			free (s);
-			for (i = 0; i < 8 && i < last; i++) {
+			for (i = 0; i < last; i++) {
 				r_cons_printf (core->cons, "%02x", finalmask[i]);
 			}
 			r_cons_newline (core->cons);
@@ -16056,6 +16065,7 @@ static void cmd_an(RCore *core, const char *input) {
 static int cmd_anal(void *data, const char *input) {
 	const char *r;
 	RCore *core = (RCore *)data;
+	ut64 addr = core->addr;
 	ut32 tbs = core->blocksize;
 	switch (input[0]) {
 	case 0: // "a"
@@ -16197,17 +16207,21 @@ static int cmd_anal(void *data, const char *input) {
 			}
 			break;
 		case 'k': // "adk"
-			r = r_anal_data_kind (core->anal, core->addr, core->block, core->blocksize);
-			r_cons_println (core->cons, r);
+			{
+				ut8 *data = r_core_readblock (core, tbs);
+				r = r_anal_data_kind (core->anal, addr, data, tbs);
+				r_cons_println (core->cons, r);
+				free (data);
+			}
 			break;
 		case '\0': // "ad"
-			r_core_anal_data (core, core->addr, 2 + (core->blocksize / 4), 1, 0);
+			r_core_anal_data (core, core->addr, 2 + (tbs / 4), 1, 0);
 			break;
 		case '4': // "ad4"
-			r_core_anal_data (core, core->addr, 2 + (core->blocksize / 4), 1, 4);
+			r_core_anal_data (core, core->addr, 2 + (tbs / 4), 1, 4);
 			break;
 		case '8': // "ad8"
-			r_core_anal_data (core, core->addr, 2 + (core->blocksize / 4), 1, 8);
+			r_core_anal_data (core, core->addr, 2 + (tbs / 4), 1, 8);
 			break;
 		case '?':
 			r_core_cmd_help (core, help_msg_ad);

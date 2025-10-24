@@ -68,10 +68,15 @@ typedef struct r_fs_plugin_t {
 	int (*read)(RFSFile *fs, ut64 addr, int len);
 	void (*close)(RFSFile *fs);
 	RList *(*dir)(RFSRoot *root, const char *path, int view);
+	bool (*mkdir)(RFSRoot *root, const char *path);
 	bool (*init)(void);
 	void (*fini)(void);
 	bool (*mount)(RFSRoot *root);
 	void (*umount)(RFSRoot *root);
+	/* callback to run plugin-specific commands (e.g. m:cmd) */
+	bool (*cmd)(RFS *fs, const char *cmd);
+	/* callback to print filesystem-specific details */
+	void (*details)(RFSRoot *root, RStrBuf *sb);
 } RFSPlugin;
 
 typedef struct r_fs_partition_t {
@@ -163,6 +168,7 @@ R_API int r_fs_write(RFS* fs, RFSFile* file, ut64 addr, const ut8 *data, int len
 R_API RFSFile *r_fs_slurp(RFS* fs, const char *path);
 R_API RList *r_fs_dir(RFS* fs, const char *path);
 R_API bool r_fs_dir_dump(RFS* fs, const char *path, const char *name);
+R_API bool r_fs_mkdir(RFS *fs, const char *path);
 
 R_API RList *r_fs_find_name(RFS* fs, const char *name, const char *glob);
 R_API RList *r_fs_find_off(RFS* fs, const char *name, ut64 off);
@@ -178,6 +184,9 @@ R_API bool r_fs_shell(RFSShell *shell, RFS *fs, const char *root);
 R_API RFSFile *r_fs_file_new(RFSRoot *root, const char *path);
 R_API void r_fs_file_free(RFSFile *file);
 R_API char* r_fs_file_copy_abs_path(RFSFile* file);
+
+/* run a command against registered fs plugins. Returns true if handled */
+R_API bool r_fs_cmd(RFS *fs, const char *cmd);
 
 // root
 R_API RList *r_fs_root(RFS *fs, const char *path);
@@ -205,6 +214,7 @@ extern RFSPlugin r_fs_plugin_minix;
 extern RFSPlugin r_fs_plugin_ntfs;
 extern RFSPlugin r_fs_plugin_posix;
 extern RFSPlugin r_fs_plugin_r2;
+extern RFSPlugin r_fs_plugin_tmp;
 extern RFSPlugin r_fs_plugin_reiserfs;
 extern RFSPlugin r_fs_plugin_sfs;
 extern RFSPlugin r_fs_plugin_squashfs;
@@ -215,6 +225,7 @@ extern RFSPlugin r_fs_plugin_ufs2;
 extern RFSPlugin r_fs_plugin_ufs;
 extern RFSPlugin r_fs_plugin_xfs;
 extern RFSPlugin r_fs_plugin_zip;
+extern RFSPlugin r_fs_plugin_ubifs;
 #endif
 
 #ifdef __cplusplus

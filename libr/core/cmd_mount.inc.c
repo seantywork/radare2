@@ -2,6 +2,8 @@
 
 #if R_INCLUDE_BEGIN
 
+#include "cmd_mmc.inc.c"
+
 static RCoreHelpMessage help_msg_m = {
 	"Usage:", "m[-?*dgy] [...] ", "Mountpoints management",
 	"m", " /mnt ext2 0", "mount ext2 fs at /mnt with delta 0 on IO",
@@ -17,17 +19,28 @@ static RCoreHelpMessage help_msg_m = {
 	"mf", "[?] [o|n]", "search files for given filename or for offset",
 	"mg", " /foo [offset size]", "get fs file/dir and dump to disk (support base64:)",
 	"mi", " /foo/bar", "get offset and size of given file",
+	"mis", " /foo/bar", "get offset and size of given file and seek to it",
 	"mj", "", "list mounted filesystems in JSON",
+	"mmc", "[left_path] [right_path]", "Mountpoint Miknight Commander (dual-panel file manager)",
+	"mn", " [mountpoint]", "show filesystem information details",
 	"mo", " /foo/bar", "open given file into a malloc://",
 	"mp", " msdos 0", "show partitions in msdos format at offset 0",
 	"mp", "", "list all supported partition types",
 	"ms", " /mnt", "open filesystem shell at /mnt (or fs.cwd if not defined)",
+	"md+", " /dir", "create directory inside mounted filesystem",
 	"mw", " [file] [data]", "write data into file",
 	"mwf", " [diskfile] [r2filepath]", "write contents of local diskfile into r2fs mounted path",
 	"my", "", "yank contents of file into clipboard",
 	"mal", "", "list available r2 docs",
 	"man", " [page]", "man=manpage reading (see mal)",
 	//"TODO: support multiple mountpoints and RFile IO's (need io+core refactorn",
+	NULL
+};
+
+static RCoreHelpMessage help_msg_mcolon = {
+	"Usage:", "m:", "[plugin-command]",
+	"m:", "", "list the fs plugins",
+	"m:", "posix", "run the command associated with the 'posix' fs plugin",
 	NULL
 };
 
@@ -92,72 +105,152 @@ static char *readman(RCore *core, const char *page) {
 		p = r_str_newf ("%s/man/man%d/%s.%d", "/usr/share", cat, page, cat);
 		res = r_file_slurp (p, NULL);
 	}
-	if (res) {
-		char *p = strstr (res, ".");
-		while (p) {
-			if (p[1] == '\\' || p != res) {
-				p++;
-			}
-			switch (p[1]) {
-			case '\\': // ".\""
-				p--; *p = ' ';
-				while (*p && *p != '\n') {
-					*p = ' ';
-					p++;
-				}
-				break;
-			case 'T': // ".Tn"
-				if (p[2] == 'P') {
-					memset (p, ' ', 3);
-					break;
-				}
-				if (p[2] == 'H') {
-					memcpy (p, "\n#", 2);
-					break;
-				}
-				// fallthrough
-			case 'B': // ".Bl"
-				if (p[2] == ' ') {
-					char *nl = strchr (p, '\n');
-					if (nl) {
-						memmove (p, p + 1, nl - p - 1);
-						memcpy (p, " '", 2);
-						nl[-1] = '\'';
-						p = nl;
-					}
-					break;
-				}
-			case 'F': // ".Fl"
-				while (*p && *p != '\n') {
-					*p = ' ';
-					p++;
-				}
-				break;
-			case 'R': // ".RS" ".RE"
-			case 'E': // ".El"
-			case 'N': // ".Nm"
-			case 'X': // ".Xr"
-			case 'D': // ".Dt"
-			case 'P': // ".Dt"
-			case 'A': // ".Ar"
-				memset (p, ' ', 3);
-				break;
-			case 'O': // ".Op Fl"
-				memset (p, ' ', 6);
-				p[6] = '-';
-				break;
-			case 'S': //  .Sh section header
-				memcpy (p, "\n##", 3);
-				break;
-			case 'I': // ".It"
-				memcpy (p, "\n   * ", 6);
-				break;
-			}
-			p = strstr (p, "\n.");
+	if (!res && cat == 1) {
+		// Try man3 if man1 not found
+		free (p);
+		cat = 3;
+		p = r_str_newf ("%s/man/man%d/%s.%d", R2_DATDIR, cat, page, cat);
+		res = r_file_slurp (p, NULL);
+		if (!res) {
+			free (p);
+			p = r_str_newf ("%s/man/man%d/%s.%d", "/usr/share", cat, page, cat);
+			res = r_file_slurp (p, NULL);
 		}
-		// replace \n.XX with stuff
+	}
+	if (res) {
+		// Process man page macros to markdown
+		RStrBuf *sb = r_strbuf_new ("");
+		char *lines = res;
+		char *line = lines;
+		bool in_code_block = false;
+		bool in_list = false;
+
+		while (line && *line) {
+			char *next_line = strchr (line, '\n');
+			if (next_line) {
+				*next_line = '\0';
+				next_line++;
+			}
+
+			// Skip empty lines at the beginning
+			if (!*line) {
+				line = next_line;
+				continue;
+			}
+
+			// Check if this is a man macro line
+			if (*line == '.') {
+				char *macro = line + 1;
+				char *args_str = strchr (macro, ' ');
+				const char *args_trimmed = NULL;
+				if (args_str) {
+					*args_str = '\0';
+					args_trimmed = r_str_trim_head_ro (args_str + 1);
+				}
+
+				if (!strcmp (macro, "Sh")) {
+					// Section header
+					r_strbuf_appendf (sb, "\n## %s\n\n", args_trimmed ? args_trimmed : "");
+					in_list = false;
+				} else if (!strcmp (macro, "Ss")) {
+					// Subsection header
+					r_strbuf_appendf (sb, "\n### %s\n\n", args_trimmed ? args_trimmed : "");
+					in_list = false;
+				} else if (!strcmp (macro, "Pp")) {
+					// Paragraph break
+					r_strbuf_append (sb, "\n\n");
+				} else if (!strcmp (macro, "Bl")) {
+					// Begin list
+					in_list = true;
+				} else if (!strcmp (macro, "El")) {
+					// End list
+					in_list = false;
+					r_strbuf_append (sb, "\n");
+				} else if (!strcmp (macro, "It")) {
+					// List item
+					if (in_list) {
+						if (args_trimmed) {
+							// Handle tagged list items
+							if (!strcmp (args_trimmed, "Fl")) {
+								r_strbuf_append (sb, "\n- `-`: ");
+							} else if (r_str_startswith (args_trimmed, "Fl ")) {
+								const char *flag = args_trimmed + 3; // Skip "Fl "
+								r_strbuf_appendf (sb, "\n- `-%s`: ", flag);
+							} else if (!strcmp (args_trimmed, "Ar")) {
+								r_strbuf_append (sb, "\n- `<arg>`: ");
+							} else {
+								r_strbuf_appendf (sb, "\n- `%s`: ", args_trimmed);
+							}
+						} else {
+							r_strbuf_append (sb, "\n- ");
+						}
+					} else {
+						r_strbuf_appendf (sb, "\n   * %s", args_trimmed ? args_trimmed : "");
+					}
+				} else if (!strcmp (macro, "Nm")) {
+					// Name
+					r_strbuf_appendf (sb, "%s", args_trimmed ? args_trimmed : "");
+				} else if (!strcmp (macro, "Nd")) {
+					// Description
+					r_strbuf_appendf (sb, " - %s", args_trimmed ? args_trimmed : "");
+				} else if (!strcmp (macro, "Ft")) {
+					// Function type
+					r_strbuf_appendf (sb, "\n**%s** ", args_trimmed ? args_trimmed : "");
+				} else if (!strcmp (macro, "Fn")) {
+					// Function name
+					r_strbuf_appendf (sb, "`%s`", args_trimmed ? args_trimmed : "");
+				} else if (!strcmp (macro, "Fl")) {
+					// Flag option
+					r_strbuf_appendf (sb, "`-%s`", args_trimmed ? args_trimmed : "");
+				} else if (!strcmp (macro, "Ar")) {
+					// Argument
+					r_strbuf_appendf (sb, "`%s`", args_trimmed ? args_trimmed : "");
+				} else if (!strcmp (macro, "Op")) {
+					// Optional argument - ignore for now
+				} else if (!strcmp (macro, "In")) {
+					// Include file
+					r_strbuf_appendf (sb, "\n`%s`", args_trimmed ? args_trimmed : "");
+				} else if (!strcmp (macro, "Dl")) {
+					// Display literal
+					r_strbuf_appendf (sb, "\n```\n%s\n```\n", args_trimmed ? args_trimmed : "");
+				} else if (!strcmp (macro, "Bd")) {
+					// Begin display
+					r_strbuf_append (sb, "\n```\n");
+					in_code_block = true;
+				} else if (!strcmp (macro, "Ed")) {
+					// End display
+					r_strbuf_append (sb, "\n```\n");
+					in_code_block = false;
+				} else if (!strcmp (macro, "Os")) {
+					// Operating system - ignore
+				} else if (!strcmp (macro, "Dt")) {
+					// Title - ignore
+				} else {
+					// Unknown macro - remove the line
+				}
+			} else {
+				// Regular text line
+				if (in_code_block) {
+					r_strbuf_appendf (sb, "%s\n", line);
+				} else {
+					// Clean up extra spaces and format text
+					char *trimmed = r_str_trim_dup (line);
+					if (*trimmed) {
+						r_strbuf_appendf (sb, "%s\n", trimmed);
+					}
+					free (trimmed);
+				}
+			}
+
+			line = next_line;
+		}
+
+		free (res);
+		res = r_strbuf_drain (sb);
+
+		// Clean up extra whitespace
+		res = r_str_replace_all (res, "\n\n\n", "\n\n");
 		res = r_str_replace_all (res, "\\-", "-");
-		res = r_str_replace_all (res, " Ar ", " ");
 	}
 	free (p);
 	return res;
@@ -420,6 +513,47 @@ static int cmd_mount(void *data, const char *_input) {
 			pj_free (pj);
 		}
 		break;
+	case 'n': // "mn"
+		if (input[1] == '?') { // "mn?"
+			r_core_cmd_help_match (core, help_msg_m, "mn");
+		} else {
+			input = (char *)r_str_trim_head_ro (input + 1);
+			RFSRoot *target_root = NULL;
+
+			if (*input) {
+				r_list_foreach (core->fs->roots, iter, root) {
+					if (!strcmp (root->path, input)) {
+						target_root = root;
+						break;
+					}
+				}
+				if (!target_root) {
+					R_LOG_ERROR ("Mountpoint '%s' not found", input);
+					break;
+				}
+			} else {
+				// Use first mounted filesystem if no mountpoint specified
+				target_root = r_list_first (core->fs->roots);
+				if (!target_root) {
+					R_LOG_ERROR ("No filesystems mounted");
+					break;
+				}
+			}
+
+			if (target_root->p->details) {
+				RStrBuf *sb = r_strbuf_new ("");
+				target_root->p->details (target_root, sb);
+				const char *details_str = r_strbuf_get (sb);
+				if (details_str && *details_str) {
+					r_cons_printf (core->cons, "%s", details_str);
+				}
+				r_strbuf_free (sb);
+			} else {
+				R_LOG_ERROR ("Filesystem does not provide details information");
+				break;
+			}
+		}
+		break;
 	case '*': // "m*"
 		r_list_foreach (core->fs->roots, iter, root) {
 			r_cons_printf (core->cons, "m %s %s 0x%"PFMT64x"\n",
@@ -460,6 +594,48 @@ static int cmd_mount(void *data, const char *_input) {
 	case 'd': // "md"
 		if (input[1] == '?') { // "md?"
 			r_core_cmd_help_contains (core, help_msg_m, "md");
+		} else if (input[1] == '+' && input[2] == '?') { // "md+?"
+			r_core_cmd_help_contains (core, help_msg_m, "md+");
+		} else if (input[1] == '+') { // "md+"
+			const char *arg = r_str_trim_head_ro (input + 2);
+			if (R_STR_ISEMPTY (arg)) {
+				R_LOG_ERROR ("Usage: md+ /path");
+				r_core_return_value (core, R_CMD_RC_FAILURE);
+				break;
+			}
+			char *target = strdup (arg);
+			if (!target) {
+				r_core_return_value (core, R_CMD_RC_FAILURE);
+				break;
+			}
+			r_str_trim (target);
+			char *abspath = NULL;
+			if (*target == '/') {
+				abspath = strdup (target);
+			} else {
+				const char *cwd = r_config_get (core->config, "fs.cwd");
+				abspath = r_str_newf ("%s/%s", cwd, target);
+			}
+			free (target);
+			if (!abspath) {
+				r_core_return_value (core, R_CMD_RC_FAILURE);
+				break;
+			}
+			r_str_trim_path (abspath);
+			if (!*abspath) {
+				free (abspath);
+				abspath = strdup ("/");
+				if (!abspath) {
+					r_core_return_value (core, R_CMD_RC_FAILURE);
+					break;
+				}
+			}
+			bool ok = r_fs_mkdir (core->fs, abspath);
+			if (!ok) {
+				R_LOG_ERROR ("Cannot create directory");
+			}
+			free (abspath);
+			r_core_return_value (core, ok? R_CMD_RC_SUCCESS: R_CMD_RC_FAILURE);
 		} else {
 			cmd_mount_ls (core, input + 1);
 		}
@@ -508,6 +684,17 @@ static int cmd_mount(void *data, const char *_input) {
 	case 'i':
 		if (input[1] == '?') { // "mi?"
 			r_core_cmd_help_match (core, help_msg_m, "mi");
+		} else if (input[1] == 's') { // "mis"
+			input = (char *)r_str_trim_head_ro (input + 2);
+			file = r_fs_open (core->fs, input, false);
+			if (file) {
+				r_fs_read (core->fs, file, 0, file->size);
+				r_core_seek (core, file->off, true);
+				r_cons_printf (core->cons, "'f file %d 0x%08"PFMT64x"\n", file->size, file->off);
+				r_fs_close (core->fs, file);
+			} else {
+				R_LOG_ERROR ("Cannot open file");
+			}
 		} else {
 			input = (char *)r_str_trim_head_ro (input + 1);
 			file = r_fs_open (core->fs, input, false);
@@ -519,6 +706,11 @@ static int cmd_mount(void *data, const char *_input) {
 			} else {
 				R_LOG_ERROR ("Cannot open file");
 			}
+		}
+		break;
+	case 'm': // "mm"
+		if (input[1] == 'c') { // "mmc"
+			return cmd_mmc (core, input + 2);
 		}
 		break;
 	case 'c': // "mc"
@@ -748,6 +940,19 @@ static int cmd_mount(void *data, const char *_input) {
 			r_fs_close (core->fs, file);
 		} else {
 			R_LOG_ERROR ("Cannot open file");
+		}
+		break;
+	case ':':
+		if (input[1] == '?') {
+			r_core_cmd_help (core, help_msg_mcolon);
+		} else if (input[1] == 'l' || !input[1]) {
+			RListIter *iter;
+			RFSPlugin *plug;
+			r_list_foreach (core->fs->plugins, iter, plug) {
+				r_cons_println (core->cons, plug->meta.name);
+			}
+		} else {
+			r_fs_cmd (core->fs, r_str_trim_head_ro (input + 1));
 		}
 		break;
 	case '?':

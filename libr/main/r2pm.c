@@ -7,6 +7,10 @@
 
 #define R2PM_GITURL "https://github.com/radareorg/radare2-pm"
 
+#ifndef R2PM_STALE_DAYS
+#define R2PM_STALE_DAYS 14
+#endif
+
 static int r2pm_install(RList *targets, bool uninstall, bool clean, bool force, bool global);
 
 static const char *helpmsg =
@@ -361,6 +365,40 @@ static int r2pm_update(bool force) {
 	return rc;
 }
 
+static void r2pm_check_pull_age(void) {
+	char *gpath = r2pm_gitdir ();
+	if (!gpath) {
+		return;
+	}
+	char *pmpath = r_str_newf ("%s/%s", gpath, "radare2-pm");
+	free (gpath);
+	if (!r_file_is_directory (pmpath)) {
+		free (pmpath);
+		return;
+	}
+	/* Get unix epoch of last commit */
+	char *out = r_sys_cmd_strf ("git -C '%s' log -1 --format=%%ct 2>/dev/null", pmpath);
+	free (pmpath);
+	if (!out) {
+		return;
+	}
+	r_str_trim (out);
+	if (!*out) {
+		free (out);
+		return;
+	}
+	long long commit_ts = atoll (out);
+	free (out);
+	if (commit_ts <= 0) {
+		return;
+	}
+	time_t now = time (NULL);
+	const long stale_seconds = (long)R2PM_STALE_DAYS * 24L * 3600L;
+	if ((now - (time_t)commit_ts) > (time_t)stale_seconds) {
+		R_LOG_WARN ("r2pm database seems older than %d days: Run 'r2pm -U' to update it", R2PM_STALE_DAYS);
+	}
+}
+
 // set python virtual environment when available
 static void r2pm_set_pyvenv(R2Pm *r2pm) {
 	char *r2_prefix = r_xdg_datadir ("prefix");
@@ -479,6 +517,20 @@ static void r2pm_setenv(R2Pm *r2pm) {
 #endif
 	r_sys_setenv_sep (ldpathvar, r2pm_libdir, false);
 	r_sys_setenv_sep (ldpathvar, R2_LIBDIR, false);
+	{
+		char *r2_cflags = NULL;
+		char *r2_ldflags = NULL;
+		if (r_main_r2_build_flags (&r2_cflags, &r2_ldflags)) {
+			if (r2_cflags) {
+				r_sys_setenv ("R2_CFLAGS", r2_cflags);
+			}
+			if (r2_ldflags) {
+				r_sys_setenv ("R2_LDFLAGS", r2_ldflags);
+			}
+		}
+		free (r2_cflags);
+		free (r2_ldflags);
+	}
 	free (r2pm_libdir);
 
 	char *incdir = r_str_newf ("%s/include", r2_prefix);
@@ -1129,6 +1181,8 @@ static void r2pm_envhelp(void) {
 	char *r2pm_prefix = r_sys_getenv ("R2PM_PREFIX");
 	char *r2pm_gitdir = r_sys_getenv ("R2PM_GITDIR");
 	char *r2pm_giturl = r_sys_getenv ("R2PM_GITURL");
+	char *r2_cflags = r_sys_getenv ("R2_CFLAGS");
+	char *r2_ldflags = r_sys_getenv ("R2_LDFLAGS");
 	bool r2pm_offline = r_sys_getenv_asbool ("R2PM_OFFLINE");
 	char *r2pm_plugdir2 = r_str_newf (R2_LIBDIR "/radare2/" R2_VERSION);
 	printf ("R2_LOG_LEVEL=%d         # define log.level for r2pm\n"
@@ -1144,7 +1198,9 @@ static void r2pm_envhelp(void) {
 		"R2PM_LIBDIR=%s\n"
 		"R2PM_DBDIR=%s\n"
 		"R2PM_GITDIR=%s\n"
-		"R2PM_GITURL=%s\n",
+		"R2PM_GITURL=%s\n"
+		"R2_CFLAGS=%s\n"
+		"R2_LDFLAGS=%s\n",
 		r2pm_log_level,
 		r2pm_offline,
 		r2pm_plugdir,
@@ -1155,7 +1211,9 @@ static void r2pm_envhelp(void) {
 		r2pm_libdir,
 		r2pm_dbdir,
 		r2pm_gitdir,
-		r2pm_giturl);
+		r2pm_giturl,
+		r2_cflags? r2_cflags: "",
+		r2_ldflags? r2_ldflags: "");
 	free (r2pm_plugdir);
 	free (r2pm_plugdir2);
 	free (r2pm_prefix);
@@ -1164,6 +1222,8 @@ static void r2pm_envhelp(void) {
 	free (r2pm_dbdir);
 	free (r2pm_gitdir);
 	free (r2pm_giturl);
+	free (r2_cflags);
+	free (r2_ldflags);
 }
 
 static void r2pm_varprint(const char *name) {
@@ -1352,6 +1412,11 @@ R_API int r_main_r2pm(int argc, const char **argv) {
 		}
 		free (readme);
 		free (dbdir);
+	}
+
+	/* warn the user if the radare2-pm clone is stale */
+	if (!r2pm.init && !r2pm.quiet) {
+		r2pm_check_pull_age ();
 	}
 	if (r2pm.run) {
 		int i;

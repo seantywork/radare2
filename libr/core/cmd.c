@@ -65,10 +65,22 @@ static void cmd_debug_reg(RCore *core, const char *str);
 
 R_VEC_TYPE(RVecAnalRef, RAnalRef);
 
+R_API ut8 *r_core_readblock(RCore *core, ut64 size) {
+	if (size == 0) {
+		size = core->blocksize;
+	}
+	ut8 *buf = malloc (size);
+	if (buf) {
+		r_io_read_at (core->io, core->addr, buf, size);
+	}
+	return buf;
+}
+
 #define R_INCLUDE_BEGIN 1
 #include "cmd_quit.inc.c"
 #include "cmd_hash.inc.c"
 #include "cmd_debug.inc.c"
+#include "cmd_task.inc.c"
 #include "cmd_log.inc.c"
 #include "cmd_yank.inc.c"
 #include "cmd_flag.inc.c"
@@ -88,6 +100,7 @@ R_VEC_TYPE(RVecAnalRef, RAnalRef);
 #include "cmd_mount.inc.c"
 #include "cmd_seek.inc.c"
 #include "cmd_search.inc.c" // defines incDigitBuffer... used by cmd_print
+
 #include "cmd_print.inc.c"
 #include "cmd_help.inc.c"
 
@@ -360,6 +373,7 @@ static RCoreHelpMessage help_msg_r = {
 	"radare2", " [...]", "run radare2's main",
 	"radiff2", " [...]", "run radiff2's main",
 	"rafind2", " [...]", "run rafind2's main",
+	"rafs2", " [...]", "run rafs2's main",
 	"rahash2", " [...]", "run rahash2's main",
 	"rasm2", " [...]", "run rasm2's main",
 	"ravc2", " [...]", "run ravc2's main",
@@ -2782,8 +2796,13 @@ static int __runMain(RMainCallback cb, const char *arg) {
 static bool cmd_r2cmd(RCore *core, const char *_input) {
 	char *input = r_str_newf ("r%s", _input);
 	int rc = 0;
+
 	if (r_str_startswith (input, "rax2")) {
 		rc = __runMain (core->r_main_rax2, input);
+	} else if (r_str_startswith (input, "r2pm")) {
+		rc = __runMain (core->r_main_r2pm , input);
+	} else if (r_str_startswith (input, "r2")) {
+		rc = __runMain (core->r_main_radare2, input);
 	} else if (r_str_startswith (input, "rapatch2")) {
 		r_sys_cmdf ("%s", input);
 		// rc = __runMain (r_main_rapatch2, input);
@@ -2791,14 +2810,20 @@ static bool cmd_r2cmd(RCore *core, const char *_input) {
 		r_sys_cmdf ("%s", input);
 		// rc = __runMain (core->r_main_radare2, input);
 	} else if (r_str_startswith (input, "rasm2")) {
-		r_sys_cmdf ("%s", input);
-		// rc = __runMain (core->r_main_rasm2, input);
+		// TODO: fix this (rcons)
+		#if __wasi__
+ 		  rc = __runMain (core->r_main_rasm2, input);
+ 		#else
+ 			r_sys_cmdf ("%s", input);
+ 		#endif
 	} else if (r_str_startswith (input, "rabin2")) {
 		r_sys_cmdf ("%s", input);
 		// rc = __runMain (core->r_main_rabin2, input);
 	} else if (r_str_startswith (input, "ragg2")) {
 		r_sys_cmdf ("%s", input);
 		// rc = __runMain (core->r_main_ragg2, input);
+	} else if (r_str_startswith (input, "rafs2")) {
+		rc = __runMain (core->r_main_rafs2, input);
 	} else if (r_str_startswith (input, "ravc2")) {
 		rc = __runMain (core->r_main_ravc2, input);
 	} else if (r_str_startswith (input, "r2pm")) {
@@ -2816,7 +2841,7 @@ static bool cmd_r2cmd(RCore *core, const char *_input) {
 		// rc = __runMain (core->r_main_radare2, input);
 	} else {
 		const char *r2cmds[] = {
-			"rax2", "r2pm", "rasm2", "rabin2", "rahash2", "rafind2", "rarun2", "ragg2", "radare2", "r2", NULL
+			"rax2", "r2pm", "rafs2", "rasm2", "rabin2", "rahash2", "rafind2", "rarun2", "ragg2", "radare2", "r2pm", "r2", NULL
 		};
 		int i;
 		for (i = 0; r2cmds[i]; i++) {
@@ -2825,12 +2850,14 @@ static bool cmd_r2cmd(RCore *core, const char *_input) {
 				return true;
 			}
 		}
+		if (_input[0] == 'a') {
+			r_core_cmd_help_contains (core, help_msg_r, "ra");
+		}
 		free (input);
 		return false;
 	}
 	free (input);
 	r_core_return_value (core, rc);
-	// r_core_return_code (core, rc);
 	return true;
 }
 
@@ -2870,7 +2897,7 @@ static int cmd_resize(void *data, const char *input) {
 		return cmd_rebase (core, input + 1);
 	case '2': // "r2" // XXX should be handled already in cmd_r2cmd()
 		if (r_str_startswith (input + 1, "ai")) {
-			R_LOG_ERROR ("Missing plugin. Run: r2pm -ci r2yara");
+			R_LOG_ERROR ("Missing plugin. Run: r2pm -ci r2ai");
 			r_core_return_code (core, 1);
 			return true;
 		}
@@ -3123,90 +3150,8 @@ static int cmd_pipein(void *user, const char *input) {
 	return 0;
 }
 
-static int cmd_tasks(void *data, const char *input) {
-	RCore *core = (RCore*) data;
-	switch (input[0]) {
-	case '\0': // "&"
-	case 'j': // "&j"
-		r_core_task_list (core, *input);
-		break;
-	case ':': // "&:"
-		r_core_cmd_queue (core, input + 1);
-		break;
-	case 'w': // "&w"
-		r_core_cmd_queue_wait (core);
-		break;
-	case 'b': { // "&b"
-		if (r_sandbox_enable (0)) {
-			R_LOG_ERROR ("The &b command is disabled in sandbox mode");
-			return 0;
-		}
-		int tid = r_num_math (core->num, input + 1);
-		if (tid) {
-			r_core_task_break (&core->tasks, tid);
-		}
-		break;
-	}
-	case '&': { // "&&"
-		if (r_sandbox_enable (0)) {
-			R_LOG_ERROR ("The && command is disabled in sandbox mode");
-			return 0;
-		}
-		int tid = r_num_math (core->num, input + 1);
-		r_core_task_join (&core->tasks, core->tasks.current_task, tid ? tid : -1);
-		break;
-	}
-	case '=': { // "&="
-		// r_core_task_list (core, '=');
-		int tid = r_num_math (core->num, input + 1);
-		if (tid) {
-			RCoreTask *task = r_core_task_get_incref (&core->tasks, tid);
-			if (task) {
-				if (task->res) {
-					r_cons_println (core->cons, task->res);
-				}
-				r_core_task_decref (task);
-			} else {
-				R_LOG_ERROR ("Cannot find task");
-			}
-		}
-		break;
-	}
-	case '-': // "&-"
-		if (r_sandbox_enable (0)) {
-			R_LOG_ERROR ("The &- command is disabled in sandbox mode");
-			return 0;
-		}
-		if (input[1] == '*') {
-			r_core_task_del_all_done (&core->tasks);
-		} else {
-			r_core_task_del (&core->tasks, r_num_math (core->num, input + 1));
-		}
-		break;
-	case '?': // "&?"
-		r_core_cmd_help (core, help_msg_amper);
-		break;
-	case ' ': // "& "
-	case '_': // "&_"
-	case 't': { // "&t"
-		if (r_sandbox_enable (0)) {
-			R_LOG_ERROR ("This command is disabled in sandbox mode");
-			return 0;
-		}
-		RCoreTask *task = r_core_task_new (core, true, input + 1, NULL, core);
-		if (!task) {
-			break;
-		}
-		task->transient = input[0] == 't';
-		r_core_task_enqueue (&core->tasks, task);
-		break;
-	}
-	default:
-		r_core_return_invalid_command (core, "&", *input);
-		break;
-	}
-	return 0;
-}
+// moved: see cmd_task.c
+R_IPI int cmd_tasks(void *data, const char *input);
 
 static int cmd_pointer(void *data, const char *input) {
 	RCore *core = (RCore*) data;
@@ -3927,6 +3872,10 @@ static int handle_command_call(RCore *core, const char *cmd) {
 	}
 	if (R_UNLIKELY (*cmd == '\'')) {
 		bool isaddr = cmd[1] == '@';
+		if (!strcmp (cmd, "'?")) {
+			r_core_cmd_help (core, help_msg_single_quote);
+			return true;
+		}
 		if (isaddr) {
 			cmd += 2;
 		} else {

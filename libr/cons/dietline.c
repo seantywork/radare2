@@ -646,7 +646,12 @@ R_API bool r_line_hist_add(RLine *line, const char *text) {
 		return false;
 	}
 	if (!line->history.data) {
-		inithist (line);
+		if (!inithist (line)) {
+			return false;
+		}
+	}
+	if (!line->history.data || line->history.size <= 0) {
+		return false;
 	}
 	/* ignore dup */
 	if (line->history.top > 0) {
@@ -908,7 +913,7 @@ static void selection_widget_erase(RLine *line) {
 			cons->event_resize (cons->event_data);
 			RCore *core = (RCore *) (cons->user);
 			if (core) {
-				cons->cb_task_oneshot (&core->tasks, print_rline_task, core);
+				print_rline_task (core);
 			}
 		}
 		printf ("%s", R_CONS_CLEAR_FROM_CURSOR_TO_END);

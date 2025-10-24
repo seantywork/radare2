@@ -168,22 +168,8 @@ static int emit_vex3_prefix_bmi2(ut8 *data, int w, int pp, int vreg, const Opera
 	data[l++] = 0xC4;
 	// m-mmmm = 0x02 -> 0F 38 map
 	const int mmmmm = 0x02;
-	// R' X' B' are inverted bits
-	int R = (dst && (dst->extended)) ? 1 : 0;
-	int B = 0;
-	int X = 0;
-	// Determine B and X from src (r/m side) when it's a GP reg
-	if (src) {
-		if ((src->type & OT_GPREG) && !(src->type & OT_MEMORY)) {
-			B = src->extended ? 1 : 0;
-		} else {
-			// For memory addressing, this assembler doesn't track per-base/index extension flags
-			// Use 0 (no extension) which is fine for low regs; extended bases won't be supported here.
-			B = 0;
-			X = 0;
-		}
-	}
-	ut8 vex2 = ((R ? 0 : 1) << 7) | ((X ? 0 : 1) << 6) | ((B ? 0 : 1) << 5) | (mmmmm & 0x1f);
+	// R' X' B' are inverted bits, always 1 for this assembler
+	ut8 vex2 = (1 << 7) | (1 << 6) | (1 << 5) | (mmmmm & 0x1f);
 	data[l++] = vex2;
 	// vvvv is first source (count register), encode 1's complement in bits 6..3
 	int vvvv = vreg & 0x0f; // include high bit via extended flag in caller
@@ -279,6 +265,177 @@ static int opshiftx(RArchSession *a, ut8 *data, const Opcode *op) {
 	} else {
 		// register source
 		modrm = 0xC0 | ((dst->reg & 7) << 3) | (src->reg & 7);
+		data[l++] = (ut8)modrm;
+	}
+	return l;
+}
+
+// Encode ANDN/BEXTR (BMI1):
+//   ANDN r32a, r32b, r/m32  => VEX.NDS.LZ.0F38.W0 F2 /r
+//   BEXTR r32a, r/m32, r32b => VEX.NDS.LZ.0F38.W0 F7 /r
+// Same for r64 with W1
+static int opandn_bextr(RArchSession *a, ut8 *data, const Opcode *op) {
+	if (op->operands_count != 3) {
+		return -1;
+	}
+	// Validate operand classes
+	const Operand *dst = &op->operands[0];
+	const Operand *src1 = &op->operands[1];
+	const Operand *src2 = &op->operands[2];
+	if (!(dst->type & OT_GPREG) || (dst->type & OT_MEMORY)) {
+		return -1;
+	}
+	if (!((src1->type & OT_GPREG) || (src1->type & OT_MEMORY))) {
+		return -1;
+	}
+	if (!(src2->type & OT_GPREG) || (src2->type & OT_MEMORY)) {
+		return -1;
+	}
+
+	// Size checks: only 32/64-bit are valid
+	if (!((dst->type & (OT_DWORD | OT_QWORD)) && (src1->type & (OT_DWORD | OT_QWORD)) && (src2->type & (OT_DWORD | OT_QWORD)))) {
+		return -1;
+	}
+
+	int l = 0;
+	int pp = 0; // no prefix
+	int opcode;
+	const Operand *vvvv_op;
+	const Operand *rm_op;
+	if (!strcmp (op->mnemonic, "andn")) {
+		opcode = 0xf2;
+		vvvv_op = src1;
+		rm_op = src2;
+	} else if (!strcmp (op->mnemonic, "bextr")) {
+		opcode = 0xf7;
+		vvvv_op = src2;
+		rm_op = src1;
+	} else {
+		return -1;
+	}
+
+	// Build VEX.3 prefix
+	int vreg = (vvvv_op->extended ? 8 : 0) | (vvvv_op->reg & 7);
+	l += emit_vex3_prefix_bmi2 (data + l, 0, pp, vreg, dst, rm_op);
+
+	// Opcode byte (map is carried by VEX)
+	data[l++] = opcode;
+
+	// ModRM/SIB for (dst, rm_op)
+	int modrm = 0;
+	if (rm_op->type & OT_MEMORY) {
+		// Only simple [base + disp] addressing here
+		int base = rm_op->regs[0];
+		int disp = (int)(rm_op->offset * rm_op->offset_sign);
+		int mod = 0;
+		if (base == X86R_UNDEFINED) {
+			// rip-relative unsupported here for VEX; use absolute disp32
+			modrm = (0 << 6) | ((dst->reg & 7) << 3) | 5;
+			data[l++] = (ut8)modrm;
+			data[l++] = (ut8)disp;
+			data[l++] = (ut8)(disp >> 8);
+			data[l++] = (ut8)(disp >> 16);
+			data[l++] = (ut8)(disp >> 24);
+			return l;
+		}
+		if (disp != 0) {
+			if (disp >= -128 && disp <= 127) mod = 1; else mod = 2;
+		}
+		int rm = base & 7;
+		modrm = (mod << 6) | ((dst->reg & 7) << 3) | rm;
+		data[l++] = (ut8)modrm;
+		if (mod == 1) {
+			data[l++] = (ut8)disp;
+		} else if (mod == 2) {
+			data[l++] = (ut8)disp;
+			data[l++] = (ut8)(disp >> 8);
+			data[l++] = (ut8)(disp >> 16);
+			data[l++] = (ut8)(disp >> 24);
+		}
+	} else {
+		modrm = 0xC0 | ((dst->reg & 7) << 3) | (rm_op->reg & 7);
+		data[l++] = (ut8)modrm;
+	}
+	return l;
+}
+
+// Encode BLSI/BLSMSK/BLSR (BMI1):
+//   BLSI r32a, r/m32  => VEX.LZ.0F38.W0 F3 /3
+//   BLSMSK r32a, r/m32 => VEX.LZ.0F38.W0 F3 /2
+//   BLSR r32a, r/m32  => VEX.LZ.0F38.W0 F3 /1
+// Same for r64 with W1
+static int opblsi_blsmsk_blsr(RArchSession *a, ut8 *data, const Opcode *op) {
+	if (op->operands_count != 2) {
+		return -1;
+	}
+	// Validate operand classes
+	const Operand *dst = &op->operands[0];
+	const Operand *src = &op->operands[1];
+	if (!(dst->type & OT_GPREG) || (dst->type & OT_MEMORY)) {
+		return -1;
+	}
+	if (!((src->type & OT_GPREG) || (src->type & OT_MEMORY))) {
+		return -1;
+	}
+
+	// Size checks: only 32/64-bit are valid
+	if (!((dst->type & (OT_DWORD | OT_QWORD)) && (src->type & (OT_DWORD | OT_QWORD)))) {
+		return -1;
+	}
+
+	int l = 0;
+	int pp = 2; // F3 prefix
+	int reg_code;
+	if (!strcmp (op->mnemonic, "blsi")) {
+		reg_code = 3;
+	} else if (!strcmp (op->mnemonic, "blsmsk")) {
+		reg_code = 2;
+	} else if (!strcmp (op->mnemonic, "blsr")) {
+		reg_code = 1;
+	} else {
+		return -1;
+	}
+
+	// Build VEX.3 prefix (LZ, so vvvv = 0)
+	int vreg = 0; // LZ
+	l += emit_vex3_prefix_bmi2 (data + l, 0, pp, vreg, dst, src);
+
+	// Opcode byte (map is carried by VEX): F3
+	data[l++] = 0xf3;
+
+	// ModRM/SIB for (reg_code, src)
+	int modrm = 0;
+	if (src->type & OT_MEMORY) {
+		// Only simple [base + disp] addressing here
+		int base = src->regs[0];
+		int disp = (int)(src->offset * src->offset_sign);
+		int mod = 0;
+		if (base == X86R_UNDEFINED) {
+			// rip-relative unsupported here for VEX; use absolute disp32
+			modrm = (0 << 6) | (reg_code << 3) | 5;
+			data[l++] = (ut8)modrm;
+			data[l++] = (ut8)disp;
+			data[l++] = (ut8)(disp >> 8);
+			data[l++] = (ut8)(disp >> 16);
+			data[l++] = (ut8)(disp >> 24);
+			return l;
+		}
+		if (disp != 0) {
+			if (disp >= -128 && disp <= 127) mod = 1; else mod = 2;
+		}
+		int rm = base & 7;
+		modrm = (mod << 6) | (reg_code << 3) | rm;
+		data[l++] = (ut8)modrm;
+		if (mod == 1) {
+			data[l++] = (ut8)disp;
+		} else if (mod == 2) {
+			data[l++] = (ut8)disp;
+			data[l++] = (ut8)(disp >> 8);
+			data[l++] = (ut8)(disp >> 16);
+			data[l++] = (ut8)(disp >> 24);
+		}
+	} else {
+		modrm = 0xC0 | (reg_code << 3) | (src->reg & 7);
 		data[l++] = (ut8)modrm;
 	}
 	return l;
@@ -1102,6 +1259,9 @@ static int opbs(RArchSession *a, ut8 *data, const Opcode *op) {
 	}
 
 	// Prefixes and operand/address size handling
+	if (!strcmp (op->mnemonic, "tzcnt")) {
+		data[l++] = 0xf3;
+	}
 	if (a->config->bits == 64) {
 		if (op->operands[1].type & OT_MEMORY && (op->operands[1].reg_size & OT_DWORD)) {
 			// 32-bit addressing in 64-bit mode
@@ -1117,9 +1277,13 @@ static int opbs(RArchSession *a, ut8 *data, const Opcode *op) {
 		data[l++] = 0x66;
 	}
 
-	// Opcode 0F BC (BSF) / 0F BD (BSR)
+	// Opcode 0F BC (BSF/TZCNT) / 0F BD (BSR)
 	data[l++] = 0x0f;
-	data[l++] = (!strcmp (op->mnemonic, "bsf")) ? 0xbc : 0xbd;
+	if (!strcmp (op->mnemonic, "bsr")) {
+		data[l++] = 0xbd;
+	} else {
+		data[l++] = 0xbc;
+	}
 
 	// Build ModRM/SIB depending on r/m (second operand)
 	if (op->operands[1].type & OT_GPREG && !(op->operands[1].type & OT_MEMORY)) {
@@ -1436,22 +1600,97 @@ static int opmovx(RArchSession *a, ut8 *data, const Opcode *op) {
 	int word = 0;
 	char *movx = op->mnemonic + 3;
 
-	if (!(op->operands[0].type & OT_REGTYPE && op->operands[1].type & OT_MEMORY)) {
+	// Allow reg, r/m8 and reg, r/m16 encodings
+	if (!(op->operands[0].type & OT_REGTYPE)) {
+		return -1;
+	}
+	if (!((op->operands[1].type & OT_MEMORY) || (op->operands[1].type & OT_REGTYPE))) {
 		return -1;
 	}
 	if (op->operands[1].type & OT_WORD) {
 		word = 1;
 	}
 
-	data[l++] = 0x0f;
+	// Decide opcode first
+	ut8 opc = 0;
 	if (!strcmp (movx, "zx")) {
-		data[l++] = 0xb6 + word;
+		opc = 0xb6 + word;
 	} else if (!strcmp (movx, "sx")) {
-		data[l++] = 0xbe + word;
+		opc = 0xbe + word;
 	}
-	data[l++] = op->operands[0].reg << 3 | op->operands[1].regs[0];
-	if (op->operands[1].regs[0] == X86R_ESP) {
-		data[l++] = 0x24;
+
+	// Build addressing info first
+	bool mem = (op->operands[1].type & OT_MEMORY) != 0;
+	int base = mem ? op->operands[1].regs[0] : 0;
+	int off = mem ? (int)(op->operands[1].offset * op->operands[1].offset_sign) : 0;
+	int mod = 0;
+	int rm = 0;
+	bool use_sib = false;
+	ut8 sib = 0;
+
+	if (mem) {
+		rm = (base == X86R_UNDEFINED) ? 5 : (base & 7);
+		if (base != X86R_UNDEFINED) {
+			if (off != 0) {
+				mod = (off >= -128 && off <= 127) ? 1 : 2;
+			}
+			if (mod == 0 && rm == 5) {
+				mod = 1; off = 0; // [rbp]/[r13] needs disp8 = 0
+			}
+			if (rm == 4) {
+				use_sib = true; sib = 0x24; rm = 4; // [rsp]
+			}
+		}
+	} else {
+		rm = op->operands[1].reg & 7;
+		mod = 3;
+	}
+
+	// Compute REX after determining rm/base
+	bool need_rex = false;
+	ut8 rex = 0x40;
+	if (a->config->bits == 64 && (op->operands[0].type & OT_QWORD)) {
+		rex |= 0x08; // W
+		need_rex = true;
+	}
+	if (op->operands[0].extended) {
+		rex |= 0x04; // R
+		need_rex = true;
+	}
+	if (!mem) {
+		if ((op->operands[1].type & OT_GPREG) && op->operands[1].extended) {
+			rex |= 0x01; // B for r/m reg
+			need_rex = true;
+		}
+	} else {
+		// Do not set REX.B for memory base without explicit extended flag support.
+		// Memory operands here do not carry per-base extended state, so keep B = 0.
+	}
+
+	// Emit bytes in normal order
+	if (need_rex) {
+		data[l++] = rex;
+	}
+	data[l++] = 0x0f;
+	data[l++] = opc;
+
+	if (mem) {
+		data[l++] = (ut8)((mod << 6) | ((op->operands[0].reg & 7) << 3) | (rm & 7));
+		if (use_sib) {
+			data[l++] = sib;
+		}
+		if (base == X86R_UNDEFINED) {
+			data[l++] = (ut8)off; data[l++] = (ut8)(off >> 8);
+			data[l++] = (ut8)(off >> 16); data[l++] = (ut8)(off >> 24);
+		} else if (mod == 1) {
+			data[l++] = (ut8)off;
+		} else if (mod == 2) {
+			data[l++] = (ut8)off; data[l++] = (ut8)(off >> 8);
+			data[l++] = (ut8)(off >> 16); data[l++] = (ut8)(off >> 24);
+		}
+	} else {
+		// register source: mod=11
+		data[l++] = 0xc0 | ((op->operands[0].reg & 7) << 3) | (op->operands[1].reg & 7);
 	}
 
 	return l;
@@ -4721,8 +4960,14 @@ static const LookupTable oplookup[] = {
 	{ "adx", 0, NULL, 0xd4, 1},
 	{ "amx", 0, NULL, 0xd5, 1},
 	{ "and", 0, &opand, 0},
+	{ "andn", 0, &opandn_bextr, 0},
+	{ "bextr", 0, &opandn_bextr, 0},
+	{ "blsi", 0, &opblsi_blsmsk_blsr, 0},
+	{ "blsmsk", 0, &opblsi_blsmsk_blsr, 0},
+	{ "blsr", 0, &opblsi_blsmsk_blsr, 0},
 	{ "bsf", 0, &opbs, 0},
 	{ "bsr", 0, &opbs, 0},
+	{ "tzcnt", 0, &opbs, 0},
 	{ "bswap", 0, &opbswap, 0},
 	{ "call", 0, &opcall, 0},
 	{ "cbw", 0, NULL, 0x6698, 2},
@@ -4946,6 +5191,7 @@ static const LookupTable oplookup[] = {
 	{ "mwait", 0, NULL, 0x0f01c9, 3},
 	{ "neg", 0, &opneg, 0},
 	{ "nop", 0, NULL, 0x90, 1},
+	{ "nop2", 0, NULL, 0x0f1a, 2},
 	{ "not", 0, &opnot, 0},
 	{ "or", 0, &opor, 0},
 	{ "out", 0, &opout, 0},
@@ -5432,6 +5678,10 @@ static int parseOperand(RArchSession *a, const char *str, Operand *op, bool isre
 			op->type |= OT_MEMORY | OT_OWORD | OT_GPREG;
 			op->dest_size = OT_OWORD;
 			explicit_size = true;
+		} else if (!r_str_ncasecmp (str + pos, "xmmword", 7)) {
+			op->type |= OT_MEMORY | OT_OWORD | OT_XMMREG;
+			op->dest_size = OT_OWORD;
+			explicit_size = true;
 		} else if (!r_str_ncasecmp (str + pos, "tbyte", 5)) {
 			op->type |= OT_MEMORY | OT_TBYTE | OT_GPREG;
 			op->dest_size = OT_TBYTE;
@@ -5676,14 +5926,15 @@ static int parseOpcode(RArchSession *a, const char *op, Opcode *out) {
 	}
 	char *args = strchr (op, ' ');
 	out->mnemonic = args? r_str_ndup (op, args - op): strdup (op);
-	out->operands[0].type = out->operands[1].type = 0;
-	out->operands[0].extended = out->operands[1].extended = false;
-	out->operands[0].rex_prefixed = out->operands[1].rex_prefixed = false;
+	out->operands[0].type = out->operands[1].type = out->operands[2].type = 0;
+	out->operands[0].extended = out->operands[1].extended = out->operands[2].extended = false;
+	out->operands[0].rex_prefixed = out->operands[1].rex_prefixed = out->operands[2].rex_prefixed = false;
 	out->operands[0].reg = out->operands[0].regs[0] = out->operands[0].regs[1] = X86R_UNDEFINED;
 	out->operands[1].reg = out->operands[1].regs[0] = out->operands[1].regs[1] = X86R_UNDEFINED;
-	out->operands[0].immediate = out->operands[1].immediate = 0;
-	out->operands[0].sign = out->operands[1].sign = 1;
-	out->operands[0].is_good_flag = out->operands[1].is_good_flag = true;
+	out->operands[2].reg = out->operands[2].regs[0] = out->operands[2].regs[1] = X86R_UNDEFINED;
+	out->operands[0].immediate = out->operands[1].immediate = out->operands[2].immediate = 0;
+	out->operands[0].sign = out->operands[1].sign = out->operands[2].sign = 1;
+	out->operands[0].is_good_flag = out->operands[1].is_good_flag = out->operands[2].is_good_flag = true;
 	out->is_short = false;
 	out->operands_count = 0;
 	if (args) {

@@ -1402,7 +1402,12 @@ R_API void r_core_autocomplete(RCore * R_NULLABLE core, RLineCompletion *complet
 				&& !strchr (buf->data, ' ')) {
 			r_line_completion_clear (completion);
 			char *s = r_core_cmd_strf (core, "%s?", buf->data);
+			if (!s) {
+				return;
+			}
 			eprintf ("%s%s\n%s", core->cons->line->prompt, buf->data, s);
+			r_str_ansi_filter (s, NULL, NULL, -1);
+			r_str_trim (s);
 			RList *list = r_str_split_list (s, "\n", 0);
 			RListIter *iter;
 			char *line;
@@ -1410,14 +1415,22 @@ R_API void r_core_autocomplete(RCore * R_NULLABLE core, RLineCompletion *complet
 				char *bracket_start = strstr (line, " [");
 				if (bracket_start) {
 					if (r_str_startswith (bracket_start, " [addr]") || r_str_startswith (bracket_start, " [file]")) {
-						const char *registered_option = strstr (bracket_start, "addr") ? "!!!%s $flag" : "!!!%s $file";
+						const char *registered_option = strstr (bracket_start, "addr") ? "'!!!%s $flag" : "'!!!%s $file";
 						char *cur = strchr (line, '[');
+						if (cur) {
+							*cur = 0;
+						}
+						cur = strchr (line, '|');
+						if (cur) {
+							*cur = 0;
+						}
+						cur = strchr (line, '>');
 						if (cur) {
 							*cur = 0;
 						}
 						*bracket_start = 0;
 						const char *cmd = line;
-						r_core_cmdf (core, "!!!-%s", cmd);
+						r_core_cmdf (core, "'!!!-%s", cmd);
 						r_core_cmdf (core, registered_option, cmd);
 					}
 				}
@@ -2808,7 +2821,6 @@ R_API void r_core_bind_cons(RCore *core) {
 	core->cons->cb_break = NULL; // (RConsBreakCallback)r_core_break;
 	core->cons->cb_sleep_begin = (RConsSleepBeginCallback)r_core_sleep_begin;
 	core->cons->cb_sleep_end = (RConsSleepEndCallback)r_core_sleep_end;
-	core->cons->cb_task_oneshot = (RConsQueueTaskOneshot) r_core_task_enqueue_oneshot;
 	core->cons->user = (void*)core;
 }
 
@@ -2823,15 +2835,13 @@ R_API void r_core_fini(RCore *c) {
 	r_log_add_callback (cbcore, NULL);
 	r_muta_free (c->muta);
 	r_th_lock_free (c->lock);
-	r_core_task_break_all (&c->tasks);
+	r_core_task_cancel_all (c, true);
 	r_core_task_join (&c->tasks, NULL, -1);
 	r_core_wait (c);
-	/* TODO: it leaks as shit */
 	//update_sdb (c);
 	// avoid double free
 	r_list_free (c->ropchain);
 	r_table_free (c->table);
-	r_event_free (c->ev);
 	R_FREE (c->cmdlog);
 	free (c->lastsearch);
 	r_list_free (c->cmdqueue);
@@ -2852,6 +2862,7 @@ R_API void r_core_fini(RCore *c) {
 	r_list_free (c->watchers);
 	r_list_free (c->scriptstack);
 	r_core_task_scheduler_fini (&c->tasks);
+	r_event_free (c->ev);
 	// Free cmd and its plugins before freeing event system
 	c->rcmd = r_cmd_free (c->rcmd);
 	r_lib_free (c->lib);

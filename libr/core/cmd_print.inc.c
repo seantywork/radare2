@@ -159,11 +159,12 @@ static RCoreHelpMessage help_msg_pr = {
 };
 
 static RCoreHelpMessage help_msg_prg = {
-	"Usage: prg[?ilo]", " [len]", "print raw inflated/decompressed block",
+	"Usage: prg[?ilor]", " [len]", "print raw inflated/decompressed block",
 	"prg", "", "print gunzipped data of current block",
 	"prgl", "", "decompress current block using LZ4 (adjust blocksize)",
 	"prgi", "", "show consumed bytes when inflating",
 	"prgo", "", "show output bytes after inflating",
+	"prgr", "", "print raw deflate decompressed data (no ZLIB headers)",
 	NULL
 };
 
@@ -2384,15 +2385,18 @@ static void cmd_print_format(RCore *core, const char *_input, const ut8* block, 
 
 			/* Load format from name into fmt to get the size */
 			/* Make sure the structure will be printed entirely */
+			int bufsize = core->blocksize;
 			char *fmt = sdb_get (core->print->formats, name, NULL);
 			if (fmt) {
 				// TODO: what is +10 magic number?
 				// Backtracks to commit e5e23c237755cdeb13ba15938c93ada590e453db / issue #2808
-				int size = r_print_format_struct_size (core->print, fmt, mode, 0) + 10;
-				if (size > core->blocksize) {
-					r_core_block_size (core, size);
-				}
+				int struct_size = r_print_format_struct_size (core->print, fmt, mode, 0) + 10;
+				bufsize = R_MAX (bufsize, struct_size);
 				free (fmt);
+			}
+			ut8 *buf = r_core_readblock (core, bufsize);
+			if (!buf) {
+				goto err_name;
 			}
 			/* display a format */
 			if (dot) {
@@ -2403,15 +2407,17 @@ static void cmd_print_format(RCore *core, const char *_input, const ut8* block, 
 					r_str_trim_tail (name);
 					mode = R_PRINT_MUSTSET;
 					r_print_format (core->print, core->addr,
-						core->block, core->blocksize, name, mode, eq, dot);
+						buf, bufsize, name, mode, eq, dot);
+					r_io_write_at (core->io, core->addr, buf, bufsize);
 				} else {
 					r_print_format (core->print, core->addr,
-						core->block, core->blocksize, name, mode, NULL, dot);
+						buf, bufsize, name, mode, NULL, dot);
 				}
 			} else {
 				r_print_format (core->print, core->addr,
-					core->block, core->blocksize, name, mode, NULL, NULL);
+					buf, bufsize, name, mode, NULL, NULL);
 			}
+			free (buf);
 		err_name:
 			free (name);
 		}
@@ -3531,19 +3537,12 @@ static void cmd_print_op(RCore *core, const char *input) {
 }
 
 static void printraw(RCore *core, int len, int mode) {
-	int obsz = core->blocksize;
-	int restore_obsz = 0;
-	if (len != obsz) {
-		if (!r_core_block_size (core, len)) {
-			len = core->blocksize;
-		} else {
-			restore_obsz = 1;
-		}
+	ut8 *buf = r_core_readblock (core, len);
+	if (!buf) {
+		return;
 	}
-	r_print_raw (core->print, core->addr, core->block, len, mode);
-	if (restore_obsz) {
-		(void) r_core_block_size (core, obsz);
-	}
+	r_print_raw (core->print, core->addr, buf, len, mode);
+	free (buf);
 }
 
 static void _handle_call(RCore *core, char *line, char **str) {
@@ -4001,7 +4000,7 @@ restore_conf:
 
 static bool cmd_print_ph(RCore *core, const char *input) {
 	char *algo = NULL;
-	ut32 osize = 0, len = core->blocksize;
+	ut32 len = core->blocksize;
 	int handled_cmd = false;
 
 	const char i0 = input[0];
@@ -4045,20 +4044,13 @@ static bool cmd_print_ph(RCore *core, const char *input) {
 	char *len_str = r_list_get_n (args, 1);
 	if (len_str) {
 		len = r_num_math (core->num, len_str);
-		osize = core->blocksize;
-		if (len > core->blocksize) {
-			r_core_block_size (core, len);
-			if (len != core->blocksize) {
-				R_LOG_ERROR ("Invalid block size");
-				r_core_block_size (core, osize);
-				return false;
-			}
-			r_core_block_read (core);
-		}
-	} else {
-		osize = len;
 	}
-	r_cons_printf (core->cons, "%s\n", r_hash_tostring (NULL, algo, core->block, len));
+	ut8 *buf = r_core_readblock (core, len);
+	if (!buf) {
+		return false;
+	}
+	r_cons_printf (core->cons, "%s\n", r_hash_tostring (NULL, algo, buf, len));
+	free (buf);
 	return handled_cmd;
 }
 
@@ -4081,10 +4073,14 @@ static void cmd_print_pv(RCore *core, const char *input, bool useBytes) {
 		"ret", "arg0", "arg1", "arg2", "arg3", "arg4", NULL
 	};
 	const bool be = R_ARCH_CONFIG_IS_BIG_ENDIAN (core->print->config);
-	ut8 *block = core->block;
 	int blocksize = core->blocksize;
+	ut8 *block = r_core_readblock (core, 0);
+	if (!block) {
+		return;
+	}
+	ut8 *orig_block = block;
 	ut8 *heaped_block = NULL;
-	ut8 *block_end = core->block + blocksize;
+	ut8 *block_end = block + blocksize;
 	int i, n = core->rasm->config->bits / 8;
 	int type = 'v';
 	bool fixed_size = true;
@@ -4138,7 +4134,7 @@ static void cmd_print_pv(RCore *core, const char *input, bool useBytes) {
 		if (input[1]) {
 			input++;
 		} else {
-			r_core_cmdf (core, "ps");
+			r_core_cmd0 (core, "ps");
 			break;
 		}
 		for (i = 0; stack[i]; i++) {
@@ -4417,6 +4413,7 @@ static void cmd_print_pv(RCore *core, const char *input, bool useBytes) {
 		free (heaped_block);
 		break;
 	}
+	free (orig_block);
 }
 
 static bool cmd_print_blocks(RCore *core, const char *input) {
@@ -4970,7 +4967,7 @@ static void cmd_print_bars(RCore *core, const char *input) {
 		}
 			break;
 		default:
-			r_print_columns (core->print, core->block, core->blocksize, 14);
+			r_print_columns (core->print, ptr, nblocks, 14);
 			break;
 		}
 		break;
@@ -4995,20 +4992,22 @@ static void cmd_print_bars(RCore *core, const char *input) {
 		ptr = NULL;
 		if (input[2]) {
 			ut64 bufsz = r_num_math (core->num, input + 3);
-			ut64 curbsz = core->blocksize;
 			if (bufsz < 1) {
-				bufsz = curbsz;
+				bufsz = core->blocksize;
 			}
-			if (bufsz > core->blocksize) {
-				r_core_block_size (core, bufsz);
-				r_core_block_read (core);
+			ut8 *buf = r_core_readblock (core, bufsz);
+			if (!buf) {
+				break;
 			}
-			cmd_print_eq_dict (core, core->block, bufsz);
-			if (bufsz != curbsz) {
-				r_core_block_size (core, curbsz);
-			}
+			cmd_print_eq_dict (core, buf, bufsz);
+			free (buf);
 		} else {
-			cmd_print_eq_dict (core, core->block, core->blocksize);
+			ut8 *buf = r_core_readblock (core, 0);
+			if (!buf) {
+				break;
+			}
+			cmd_print_eq_dict (core, buf, core->blocksize);
+			free (buf);
 		}
 		break;
 	case 'j': // "p=j" cjmp and jmp
@@ -6396,6 +6395,10 @@ static void bitimage(RCore *core, int cols) {
 static void cmd_pri(RCore *core, const char *input) {
 	int cols = r_config_get_i (core->config, "hex.cols");
 	bool has_color = r_config_get_i (core->config, "scr.color") > 0;
+	ut8 *buf = r_core_readblock (core, 0);
+	if (!buf) {
+		return;
+	}
 	switch (input[2]) {
 	case '?':
 		r_core_cmd_help (core, help_msg_pri);
@@ -6407,20 +6410,21 @@ static void cmd_pri(RCore *core, const char *input) {
 		bitimage (core, 1);
 		break;
 	case 'g': // gresycale
-		r_cons_image (core->block, core->blocksize, cols, 'g', 3);
+		r_cons_image (buf, core->blocksize, cols, 'g', 3);
 		break;
 	case 's': // sixel
-		r_cons_image (core->block, core->blocksize, cols, 's', 3);
+		r_cons_image (buf, core->blocksize, cols, 's', 3);
 		break;
 	case '4':
-		r_cons_image (core->block, core->blocksize, cols, 'r', 4);
+		r_cons_image (buf, core->blocksize, cols, 'r', 4);
 		break;
 	case 'r':
 	default:
 		// int mode = r_config_get_i (core->config, "scr.color")? 0: 'a';
-		r_cons_image (core->block, core->blocksize, cols, has_color? 'r': 'a', 3);
+		r_cons_image (buf, core->blocksize, cols, has_color? 'r': 'a', 3);
 		break;
 	}
+	free (buf);
 }
 
 #if 0
@@ -7241,6 +7245,7 @@ static int cmd_print(void *data, const char *input) {
 		}
 		if (sp) {
 			int n = (int) r_num_math (core->num, r_str_trim_head_ro (sp));
+			// int n = (int) r_num_math (NULL, r_str_trim_head_ro (sp));
 			if (!n) {
 				goto beach;
 			}
@@ -7769,7 +7774,9 @@ static int cmd_print(void *data, const char *input) {
 			r_core_cmd_help (core, help_msg_ps);
 			break;
 		case 'o':
-			{
+			if (input[2] == '?') {
+				r_core_cmd_help_match (core, help_msg_ps, "pso");
+			} else {
 				char *s = print_analstr (core, core->addr, 128);
 				if (s) {
 					if (input[2] == 'j') {
@@ -7791,7 +7798,9 @@ static int cmd_print(void *data, const char *input) {
 			}
 			break;
 		case 'i': // "psi"
-			if (l > 0) {
+			if (input[2] == '?') {
+				r_core_cmd_help_match (core, help_msg_ps, "psi");
+			} else if (l > 0) {
 				ut8 *buf = malloc (1024 + 1);
 				int delta = 512;
 				ut8 *p, *e, *b;
@@ -7862,15 +7871,23 @@ static int cmd_print(void *data, const char *input) {
 			}
 			break;
 		case 'x': // "psx"
-			if (l > 0) {
+			if (input[2] == '?') {
+				r_core_cmd_help_match (core, help_msg_ps, "psx");
+			} else if (l > 0) {
 				r_print_string (core->print, core->addr, block, len, R_PRINT_STRING_ESC_NL);
 			}
 			break;
 		case 'a': // "psa"
-			cmd_psa (core, input + 1);
+			if (input[2] == '?') {
+				r_core_cmd_help_match (core, help_msg_ps, "psa");
+			} else {
+				cmd_psa (core, input + 1);
+			}
 			break;
 		case 'b': // "psb"
-			if (l > 0) {
+			if (input[2] == '?') {
+				r_core_cmd_help_match (core, help_msg_ps, "psb");
+			} else if (l > 0) {
 				int quiet = input[2] == 'q'; // "psbq"
 				RStrBuf *sb = r_strbuf_new ("");
 				int i, hasnl = 0;
@@ -7929,7 +7946,9 @@ static int cmd_print(void *data, const char *input) {
 			}
 			break;
 		case 'z': // "psz"
-			if (l > 0) {
+			if (input[2] == '?') {
+				r_core_cmd_help_match (core, help_msg_ps, "psz");
+			} else if (l > 0) {
 				ut8 *s = decode_text (core, core->addr, l, true);
 				if (!s) {
 					break;
@@ -7958,10 +7977,16 @@ static int cmd_print(void *data, const char *input) {
 			}
 			break;
 		case 'p': // "psp"
-			print_pascal_string (core, input + 2, l);
+			if (input[2] == '?') {
+				r_core_cmd_help_match (core, help_msg_ps, "psp");
+			} else {
+				print_pascal_string (core, input + 2, l);
+			}
 			break;
 		case 'w': // "psw"
-			if (l > 0) {
+			if (input[2] == '?') {
+				r_core_cmd_help_match (core, help_msg_ps, "psw");
+			} else if (l > 0) {
 				if (input[2] == 'j') { // pswj
 					print_json_string (core, (const char *) core->block, len, "wide");
 				} else {
@@ -7971,7 +7996,9 @@ static int cmd_print(void *data, const char *input) {
 			}
 			break;
 		case 'W': // "psW"
-			if (l > 0) {
+			if (input[2] == '?') {
+				r_core_cmd_help_match (core, help_msg_ps, "psW");
+			} else if (l > 0) {
 				if (input[2] == 'j') { // psWj
 					print_json_string (core, (const char *) core->block, len, "wide32");
 				} else {
@@ -7981,7 +8008,9 @@ static int cmd_print(void *data, const char *input) {
 			}
 			break;
 		case 'j': // "psj"
-			{
+			if (input[2] == '?') {
+				r_core_cmd_help_match (core, help_msg_ps, "psj");
+			} else {
 				ut8 *s = decode_text (core, core->addr, l, false);
 				if (s) {
 					print_json_string (core, (const char *) s, l, NULL);
@@ -7990,16 +8019,20 @@ static int cmd_print(void *data, const char *input) {
 			}
 			break;
 		case ' ': // "ps"
-		{
-			ut8 *s = decode_text (core, core->addr, l, false);
-			if (s) {
-				r_print_string (core->print, core->addr, s, l, 0);
-				free (s);
+			if (input[2] == '?') {
+				r_core_cmd_help_match (core, help_msg_ps, "ps");
+			} else {
+				ut8 *s = decode_text (core, core->addr, l, false);
+				if (s) {
+					r_print_string (core->print, core->addr, s, l, 0);
+					free (s);
+				}
 			}
 			break;
-		}
 		case 'u': // "psu"
-			if (l > 0) {
+			if (input[2] == '?') {
+				r_core_cmd_help_match (core, help_msg_ps, "psu");
+			} else if (l > 0) {
 				bool json = input[2] == 'j'; // "psuj"
 				if (input[2] == 'z') { // "psuz"
 					int i, z;
@@ -8024,10 +8057,16 @@ static int cmd_print(void *data, const char *input) {
 			}
 			break;
 		case 'q': // "psq"
-			r_core_cmd0 (core, "pqs");
+			if (input[2] == '?') {
+				r_core_cmd_help_match (core, help_msg_ps, "psq");
+			} else {
+				r_core_cmd0 (core, "pqs");
+			}
 			break;
 		case 's': // "pss"
-			if (l > 0) {
+			if (input[2] == '?') {
+				r_core_cmd_help_match (core, help_msg_ps, "pss");
+			} else if (l > 0) {
 				int h, w = r_cons_get_size (core->cons, &h);
 				int colwidth = r_config_get_i (core->config, "hex.cols") * 2;
 				core->print->width = (colwidth == 32)?w: colwidth; // w;
@@ -8042,7 +8081,9 @@ static int cmd_print(void *data, const char *input) {
 			}
 			break;
 		case '+': // "ps+"
-			if (l > 0) {
+			if (input[2] == '?') {
+				r_core_cmd_help_match (core, help_msg_ps, "ps+");
+			} else if (l > 0) {
 				const bool json = input[2] == 'j'; // ps+j
 				ut64 bitness = r_config_get_i (core->config, "asm.bits");
 				if (bitness != 32 && bitness != 64) {
@@ -8063,7 +8104,7 @@ static int cmd_print(void *data, const char *input) {
 				}
 			}
 			break;
-		default: // "ps"
+		case 0:
 			{
 				const char *current_charset = r_config_get (core->config, "cfg.charset");
 				if (R_STR_ISEMPTY (current_charset)) {
@@ -8087,6 +8128,9 @@ static int cmd_print(void *data, const char *input) {
 				}
 				break;
 			}
+		default: // "ps"
+			r_core_return_invalid_command (core, "ps", input[2]);
+			break;
 		}
 		break;
 	case 'm': // "pm"
@@ -8220,6 +8264,20 @@ static int cmd_print(void *data, const char *input) {
 			case '?':
 				r_core_cmd_help (core, help_msg_prg);
 				break;
+			case 'r': // "prgr" // raw deflate
+			{
+				int outlen = 0;
+				int inConsumed = 0;
+				ut8 *out;
+				out = r_inflate_raw (block, core->blocksize, &inConsumed, &outlen);
+				if (out) {
+					r_cons_write (core->cons, (const char *) out, outlen);
+					free (out);
+				} else {
+					R_LOG_ERROR ("inflate failed: raw deflate decompression error");
+				}
+			}
+			break;
 			case 'l': // "prgl" // lz4
 				{
 					ut8 *dst = calloc (len, 4);

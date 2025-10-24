@@ -158,6 +158,7 @@ static const struct {const char* name; ut64 bit;} arch_bit_array[] = {
 	{ "lm32", R_SYS_ARCH_LM32},
 	{ "v850", R_SYS_ARCH_V850},
 	{ "bpf", R_SYS_ARCH_BPF},
+	{ "sbpf", R_SYS_ARCH_SBPF},
 	{NULL, 0}
 };
 
@@ -863,10 +864,12 @@ R_API int r_sys_cmd_str_full(const char *cmd, const char *input, int ilen, char 
 				FD_SET (sh_in[1], &wfds);
 			}
 			memset (buffer, 0, sizeof (buffer));
+
 			nfd = select (sh_err[0] + 1, &rfds, &wfds, NULL, NULL);
-			if (nfd < 0) {
-				// eprintf ("nfd %d 2%c", nfd, 10);
+			if (nfd < 0 && errno == EINTR) {
+				continue;
 			}
+
 			if (output && FD_ISSET (sh_out[0], &rfds)) {
 				if ((bytes = read (sh_out[0], buffer, sizeof (buffer))) < 1) {
 					break;

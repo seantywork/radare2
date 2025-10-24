@@ -8,6 +8,7 @@
 
 #define r_anal_value_new() R_NEW0 (RAnalValue)
 #define ARCH_HAVE_READ 1
+#define GHOSTOPS 1
 
 #if 0
 CYCLES:
@@ -1867,7 +1868,6 @@ static void anop_esil(RArchSession *as, RAnalOp *op, ut64 addr, const ut8 *buf, 
 		// AES instructions
 		break;
 	case X86_INS_AND:
-	case X86_INS_ANDN:
 	case X86_INS_ANDPD:
 	case X86_INS_ANDNPD:
 		{
@@ -1888,6 +1888,18 @@ static void anop_esil(RArchSession *as, RAnalOp *op, ut64 addr, const ut8 *buf, 
 			free (src);
 			free (dst);
 			free (dst2);
+		}
+		break;
+	case X86_INS_ANDN:
+		{
+			ut32 bitsize;
+			char *src1 = getarg (&gop, 1, 0, NULL, NULL);
+			char *src2 = getarg (&gop, 2, 0, NULL, NULL);
+			dst = getarg (&gop, 0, 1, NULL, &bitsize);
+			esilprintf (op, "%s,%s,~,&,%s,$z,zf,:=,$p,pf,:=,%d,$s,sf,:=,0,cf,:=,0,of,:=", src2, src1, dst, bitsize - 1);
+			free (src1);
+			free (src2);
+			free (dst);
 		}
 		break;
 	case X86_INS_PANDN:
@@ -3901,6 +3913,17 @@ static bool decode(RArchSession *as, RAnalOp *op, RArchDecodeMask mask) {
 
 	cs_insn *insn = NULL;
 	int n;
+#if GHOSTOPS
+	if (op->size >= 2 && op->bytes[0] == 0x0f) {
+		ut8 b1 = op->bytes[1];
+		if (b1 == 0x1a || b1 == 0x1b) {
+			op->type = R_ANAL_OP_TYPE_NOP;
+			op->mnemonic = strdup ("nop2");
+			op->size = 2;
+			return true;
+		}
+	}
+#endif
 
 	op->cycles = 1; // aprox
 	cs_option (handle, CS_OPT_DETAIL, CS_OPT_ON);
@@ -3920,7 +3943,7 @@ static bool decode(RArchSession *as, RAnalOp *op, RArchDecodeMask mask) {
 	n = cs_disasm (handle, (const ut8*)buf, len, addr, 1, &insn);
 #endif
 	//XXX: capstone lcall seg:off workaround, remove when capstone will be fixed
-	if (n >= 1 && mode == CS_MODE_16 && !strncmp (insn->mnemonic, "lcall", 5)) {
+	if (n >= 1 && mode == CS_MODE_16 && r_str_startswith (insn->mnemonic, "lcall")) {
 		char *opstr = strdup (insn->op_str);
 		opstr = r_str_replace (opstr, ", ", ":", 0);
 		r_str_ncpy (insn->op_str, opstr, sizeof (insn->op_str));
