@@ -6991,7 +6991,7 @@ static int cmd_print(void *data, const char *input) {
 				int bufsz;
 				RAnalOp aop = {0};
 				r_asm_set_pc (core->rasm, core->addr);
-				RAsmCode *acode = r_asm_massemble (core->rasm, input + 2);
+				RAsmCode *acode = r_asm_assemble (core->rasm, input + 2);
 				if (acode) {
 					bufsz = acode->len;
 					while (printed < bufsz) {
@@ -7070,7 +7070,7 @@ static int cmd_print(void *data, const char *input) {
 			}
 		} else {
 			r_asm_set_pc (core->rasm, core->addr);
-			RAsmCode *acode = r_asm_massemble (core->rasm, input + 1);
+			RAsmCode *acode = r_asm_assemble (core->rasm, input + 1);
 			if (acode) {
 				if (!acode->len) {
 					r_core_cmd_help_contains (core, help_msg_pa, "pa");
@@ -7296,7 +7296,9 @@ static int cmd_print(void *data, const char *input) {
 			processed_cmd = true;
 			break;
 		case 'c': // "pdc" // "pDc"
-			if (input[2] == 'l') {
+			if (input[2] == '.') {
+				// do nothing, all the decompilers should be handling "pdc." to be listed
+			} else if (input[2] == 'l') {
 				linear_pseudo (core, input + 3);
 			} else {
 				r_core_pseudo_code (core, input + 2);
@@ -8184,7 +8186,7 @@ static int cmd_print(void *data, const char *input) {
 					}
 					r_cons_printf (core->cons, "  // %s\n", asmop.mnemonic);
 					i--;
-					r_asm_op_fini (&asmop);
+					r_anal_op_fini (&asmop);
 				}
 				r_cons_printf (core->cons, ".equ shellcode_len, %d\n", len);
 			} else {
@@ -9147,6 +9149,10 @@ static int cmd_print(void *data, const char *input) {
 					break;
 				}
 			} else {
+				if (!rad && input[1] && input[1] != ' ') {
+					r_core_return_invalid_command (core, "p8", input[1]);
+					break;
+				}
 				r_core_block_read (core);
 				block = core->block;
 				if (rad) {
