@@ -115,7 +115,7 @@ static RCoreHelpMessage help_msg_equal_l = {
 	NULL
 };
 static RCoreHelpMessage help_msg_dollar = {
-	"Usage:", "$alias[=cmd] [args...]", "Alias commands and data (See ?$? for help on $variables)",
+	"Usage:", "$alias[=cmd] [args...]", "Alias commands and data (see ?$? for help on $variables)",
 	"$", "", "list all defined aliases",
 	"$*", "", "list all defined aliases and their values, with unprintable characters escaped",
 	"$**", "", "same as above, but if an alias contains unprintable characters, b64 encode it",
@@ -185,7 +185,7 @@ static RCoreHelpMessage help_msg_j = {
 };
 
 static RCoreHelpMessage help_msg_dash = {
-	"Usage:", "-", "open editor and run the r2 commands in the saved document",
+	"Usage:", "-", "open editor and run the r2 commands saved in the file",
 	"", "'-' '.-' '. -'", " those three commands do the same",
 	"-", "8", "same as s-8, but shorter to type (see +? command)",
 	"-a", " x86", "same as r2 -a x86 or e asm.arch=x86",
@@ -193,6 +193,7 @@ static RCoreHelpMessage help_msg_dash = {
 	"-b", " 32", "same as e or r2 -e",
 	"-c", " cpu", "same as r2 -e asm.cpu=",
 	"-e", " k=v", "same as r2 -b or e asm.bits",
+	"-E", "", "same as r2 -E or 'ed'",
 	"-h", "", "show this help (same as -?)",
 	"-H", " key", "same as r2 -H",
 	"-k", " kernel", "same as r2 -k or e asm.os",
@@ -462,19 +463,19 @@ R_API void r_core_cmd_help_json(const RCore *core, RCoreHelpMessage help) {
 	r_cons_cmd_help_json (core->cons, help);
 }
 
-R_API void r_core_cmd_help_match(const RCore *core, RCoreHelpMessage help, R_BORROW char * R_NONNULL cmd) {
+R_API void r_core_cmd_help_match(const RCore *core, RCoreHelpMessage help, const char * R_NONNULL cmd) {
 	r_cons_cmd_help_match (core->cons, help, core->print->flags & R_PRINT_FLAGS_COLOR, cmd, 0, true);
 }
 
-R_API void r_core_cmd_help_contains(const RCore *core, RCoreHelpMessage help, R_BORROW char * R_NONNULL cmd) {
+R_API void r_core_cmd_help_contains(const RCore *core, RCoreHelpMessage help, const char * R_NONNULL cmd) {
 	r_cons_cmd_help_match (core->cons, help, core->print->flags & R_PRINT_FLAGS_COLOR, cmd, 0, false);
 }
 
-R_API void r_core_cmd_help_match_spec(const RCore *core, RCoreHelpMessage help, R_BORROW char * R_NONNULL cmd, char spec) {
+R_API void r_core_cmd_help_match_spec(const RCore *core, RCoreHelpMessage help, const char * R_NONNULL cmd, char spec) {
 	r_cons_cmd_help_match (core->cons, help, core->print->flags & R_PRINT_FLAGS_COLOR, cmd, spec, true);
 }
 
-R_API void r_core_cmd_help_contains_spec(const RCore *core, RCoreHelpMessage help, R_BORROW char * R_NONNULL cmd, char spec) {
+R_API void r_core_cmd_help_contains_spec(const RCore *core, RCoreHelpMessage help, const char * R_NONNULL cmd, char spec) {
 	r_cons_cmd_help_match (core->cons, help, core->print->flags & R_PRINT_FLAGS_COLOR, cmd, spec, false);
 }
 
@@ -6369,7 +6370,18 @@ static int run_cmd_depth(RCore *core, char *cmd) {
 		}
 		ret = r_core_cmd_subst (core, rcmd);
 		if (R_UNLIKELY (ret == -1)) {
-			R_LOG_ERROR ("Invalid command '%s' (0x%02x)", rcmd, *rcmd);
+			// Check for fallback command in SDB (fallbackcmd.* namespace)
+			char *fallback_key = r_str_newf ("fallbackcmd.%s", rcmd);
+			const char *fallback_cmd = sdb_const_get (core->sdb, fallback_key, NULL);
+			if (fallback_cmd) {
+				if (r_str_startswith (fallback_cmd, "?e ")) {
+					// Execute safe ?e (echo) command only
+					r_core_cmd0 (core, fallback_cmd);
+				}
+			} else {
+				R_LOG_ERROR ("Invalid command '%s' (0x%02x)", rcmd, *rcmd);
+			}
+			free (fallback_key);
 			break;
 		}
 		if (!ptr) {

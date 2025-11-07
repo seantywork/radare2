@@ -206,7 +206,7 @@ static RCoreHelpMessage help_msg_p = {
 	"pd", "[?] [sz] [a] [b]", "disassemble N opcodes (pd) or N bytes (pD)",
 	"pf", "[?][.name] [fmt]", "print formatted data (pf.name, pf.name $<expr>)",
 	"pF", "[?][apx]", "print asn1, pkcs7 or x509",
-	"pg", "[?][x y w h] [cmd]", "create new visual gadget or print it (see pg? for details)",
+	"pg", "[?][x y w h] [cmd]", "create new visual gadget or print it (see pg?)",
 	"ph", "[?][=|hash] ([len])", "calculate hash for a block",
 	"pi", "[?][bdefrj] [num]", "print instructions",
 	"pI", "[?][iI][df] [len]", "print N instructions/bytes (f=func)",
@@ -216,7 +216,7 @@ static RCoreHelpMessage help_msg_p = {
 	"pl", "[?][format] [arg]", "print list of data (pl Ffvc)",
 	"pm", "[?] [magic]", "print libmagic data (see pm? and /m?)",
 	"po", "[?] hex", "print operation applied to block (see po?)",
-	"pp", "[?][sz] [len]", "print patterns, see pp? for more help",
+	"pp", "[?][sz] [len]", "print patterns, (see pp?)",
 	"pq", "[?][is] [len]", "print QR code with the first Nbytes",
 	"pr", "[?][glx] [len]", "print N raw bytes (in lines or hexblocks, 'g'unzip)",
 	"ps", "[?][pwz] [len]", "print pascal/wide/zero-terminated strings",
@@ -226,7 +226,7 @@ static RCoreHelpMessage help_msg_p = {
 	"pwd", "", "display current working directory",
 	"px", "[?][owq] [len]", "hexdump of N bytes (o=octal, w=32bit, q=64bit)",
 	"py", "([-:file]) [expr]", "print clipboard (yp) run python script (py:file) oneliner `py print(1)` or stdin slurp `py-`",
-	"pz", "[?] [len]", "print zoom view (see pz? for help)",
+	"pz", "[?] [len]", "print zoom view (see pz?)",
 	"pkill", " [process-name]", "kill all processes with the given name",
 	"pushd", " [dir]", "cd to dir and push current directory to stack",
 	"popd", "[-a][-h]", "pop dir off top of stack and cd to it",
@@ -317,6 +317,7 @@ static RCoreHelpMessage help_msg_pd = {
 	"pD", " N", "disassemble N bytes",
 	"pd", " -N", "disassemble N instructions backwards",
 	"pd", " N", "disassemble N instructions",
+	"pd:", "[cmd]", "run pseudo-decompiler plugin command (pdg is now pd:g, ..)",
 	"pd--", " N", "context disassembly of N instructions",
 	"pda", "", "disassemble all possible opcodes (byte per byte)",
 	"pdaj", "", "disassemble all possible opcodes (byte per byte) in JSON",
@@ -400,7 +401,7 @@ static RCoreHelpMessage help_msg_pfb = {
 static RCoreHelpMessage help_msg_pf = {
 	"Usage:", PF_USAGE_STR, "",
 	"Commands:", "", "",
-	"pf", " fmt", "show data using the given format-string. See 'pf\?\?' and 'pf\?\?\?'.",
+	"pf", " fmt", "show data using the given format-string (see 'pf\?\?' and 'pf\?\?\?')",
 	"pf", "?", "help on commands",
 	"pf", "??", "help on format characters",
 	"pf", "???", "show usage examples",
@@ -436,6 +437,7 @@ static RCoreHelpMessage help_detail_pf = {
 	" ", "e", "temporally swap endian",
 	" ", "E", "resolve enum name (see t?)",
 	" ", "f", "float value (4 bytes)",
+	" ", "g", "BF16 value (2 bytes)",
 	" ", "F", "double value (8 bytes)",
 	" ", "G", "long double value (16 bytes (10 with padding))",
 	" ", "i", "signed integer value (4 bytes) (see 'd' and 'x')",
@@ -501,12 +503,12 @@ static RCoreHelpMessage help_msg_pi = {
 	"pia", "", "print all possible opcodes (byte per byte)",
 	"pib", "", "print instructions of basic block",
 	"pid", "", "alias for pdi",
-	"pie", "[?]", "print offset + esil expression",
-	"piE", "[?]", "same as pie but taking an amount of bytes instead of instructions",
+	"pie", "[?]", "print esil of N instructions",
+	"piE", "[?]", "print esil of N bytes",
 	"pif", "[?]", "print instructions of function",
 	"pij", "", "print N instructions in JSON",
 	"pir", "", "like 'pdr' but with 'pI' output",
-	"piu", "[q] [optype]", "disassemble until instruction of given optype is found (See /atl)",
+	"piu", "[q] [optype]", "disassemble up to instruction of given <optype> (See /atl)",
 	"pix", "  [hexpairs]", "alias for pdx and pad",
 	NULL
 };
@@ -560,9 +562,11 @@ static RCoreHelpMessage help_msg_po = {
 };
 
 static RCoreHelpMessage help_msg_pq = {
-	"Usage:", "pq[?z] [len]", "generate QR code in ascii art",
+	"Usage:", "pq[?isz] [len]", "generate QR code in ascii art",
 	"pq", " 32", "print QR code with the current 32 bytes",
-	"pqz", "", "print QR code with current string in current offset",
+	"pqi", "", "print inverted QR code",
+	"pqs", "", "print QR code with current string in current offset",
+	"pqz", "", "alias for pqs",
 	NULL
 };
 
@@ -2621,6 +2625,18 @@ static void annotated_hexdump(RCore *core, const char *str, int len) {
 			if (comment) {
 				note[j] = r_str_newf (";%s", comment);
 				marks = true;
+			}
+			// collect functions
+			RAnalFunction *fcn = r_anal_get_function_at (core->anal, addr + j);
+			if (fcn) {
+				if (show_section) {
+					r_cons_printf (core->cons, "%20s ", "");
+				}
+				if (usecolor) {
+					r_cons_printf (core->cons, "%s/fcn.%s%s\n", Color_YELLOW, fcn->name, Color_RESET);
+				} else {
+					r_cons_printf (core->cons, "/fcn.%s\n", fcn->name);
+				}
 			}
 			const RList *list = r_flag_get_list (core->flags, addr + j);
 			RListIter *iter;
@@ -7277,28 +7293,40 @@ static int cmd_print(void *data, const char *input) {
 			processed_cmd = true;
 			break;
 		case 'v': // "pdv" // east decompiler
-			R_LOG_ERROR ("Missing plugin. Run: r2pm -ci east");
-			processed_cmd = true;
-			break;
 		case 'd': // "pdd" // r2dec
-			R_LOG_ERROR ("Missing plugin. Run: r2pm -ci r2dec");
-			r_core_return_code (core, 1);
-			processed_cmd = true;
-			break;
 		case 'z': // "pdz" // retdec
-			R_LOG_ERROR ("Missing plugin. Run: r2pm -ci r2retdec");
-			r_core_return_code (core, 1);
-			processed_cmd = true;
-			break;
 		case 'g': // "pdg" // r2ghidra
-			R_LOG_ERROR ("Missing plugin. Run: r2pm -ci r2ghidra");
+		{
+			// Check for fallback command in SDB (fallbackcmd.* namespace)
+			char cmd_name[4] = {'p', 'd', input[1], '\0'};
+			char *fallback_key = r_str_newf ("fallbackcmd.%s", cmd_name);
+			if (fallback_key) {
+				const char *fallback_cmd = sdb_const_get (core->sdb, fallback_key, NULL);
+				if (fallback_cmd && r_str_startswith (fallback_cmd, "?e ")) {
+					// Execute safe ?e (echo) command only
+					r_core_cmd0 (core, fallback_cmd);
+				} else {
+					R_LOG_ERROR ("Missing plugin for '%s'", cmd_name);
+				}
+				free (fallback_key);
+			} else {
+				R_LOG_ERROR ("Missing plugin for '%s'", cmd_name);
+			}
 			r_core_return_code (core, 1);
 			processed_cmd = true;
 			break;
+		}
+		case ':': // "pd:"
+			if (input[2] == '?') {
+				// nothing
+			} else if (!input[2]) {
+				r_core_cmd0 (core, "pd:?");
+			} else {
+				R_LOG_ERROR ("Unknown subcommand");
+			}
+			return 0;
 		case 'c': // "pdc" // "pDc"
-			if (input[2] == '.') {
-				// do nothing, all the decompilers should be handling "pdc." to be listed
-			} else if (input[2] == 'l') {
+			if (input[2] == 'l') {
 				linear_pseudo (core, input + 3);
 			} else {
 				r_core_pseudo_code (core, input + 2);

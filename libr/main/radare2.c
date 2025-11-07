@@ -761,6 +761,25 @@ R_API int r_main_radare2(int argc, const char **argv) {
 		mainr2_fini (&mr);
 		return main_help (1);
 	}
+	// Handle -H early to avoid creating RCore and loading plugins
+	RGetopt opt_h;
+	r_getopt_init (&opt_h, argc, argv, "H");
+	opt_h.err = 0;
+	int c_h;
+	const char *h_arg = NULL;
+	while ((c_h = r_getopt_next (&opt_h)) != -1) {
+		if (c_h == 'H') {
+			if (opt_h.ind < argc && argv[opt_h.ind][0] != '-') {
+				h_arg = argv[opt_h.ind];
+			}
+			break;
+		}
+	}
+	if (c_h == 'H' || (argc > 1 && !strcmp (argv[1], "-H"))) {
+		main_print_var (h_arg);
+		mainr2_fini (&mr);
+		return 0;
+	}
 	RCore *r = r_core_new ();
 	if (!r) {
 		R_LOG_ERROR ("Cannot initialize RCore");
@@ -795,17 +814,10 @@ R_API int r_main_radare2(int argc, const char **argv) {
 		argv++;
 	}
 
-	// -H option without argument
-	if (argc == 2 && !strcmp (argv[1], "-H")) {
-		main_print_var (NULL);
-		mainr2_fini (&mr);
-		return 0;
-	}
-
 	set_color_default (r);
 
 	RGetopt opt;
-	r_getopt_init (&opt, argc, argv, "=012AjMCwxfF:H:hm:e:nk:NdqQs:p:b:B:a:Lui:I:l:P:R:r:c:D:vVSzuXt");
+	r_getopt_init (&opt, argc, argv, "=012AjMCwxfF:hm:e:Enk:NdqQs:p:b:B:a:Lui:I:l:P:R:r:c:D:vVSzuXt");
 	while ((c = r_getopt_next (&opt)) != -1) {
 		switch (c) {
 		case 'j':
@@ -853,6 +865,10 @@ R_API int r_main_radare2(int argc, const char **argv) {
 		case 'X':
 			r_config_set_b (r->config, "bin.usextr", false);
 			break;
+		case 'E':
+			r_core_cmd0 (r, "ed!");
+			mainr2_fini (&mr);
+			return 0;
 		case 'c':
 			r_list_append (mr.cmds, (void *)strdup (opt.arg));
 			break;
@@ -864,6 +880,7 @@ R_API int r_main_radare2(int argc, const char **argv) {
 			mr.debug = 1;
 #else
 			R_LOG_ERROR ("Sorry. I'm built without debugger support");
+			mainr2_fini (&mr);
 			return 1;
 #endif
 			break;
@@ -887,10 +904,15 @@ R_API int r_main_radare2(int argc, const char **argv) {
 				if (!strcmp (opt.arg, "q")) {
 					r_core_cmd0 (r, "eq");
 				} else {
-					char *res = r_config_eval (r->config, opt.arg, false, NULL);
-					r_cons_print (r->cons, res);
-					free (res);
-					r_list_append (mr.evals, (void *)strdup (opt.arg));
+					if (strchr (opt.arg, '=')) {
+						// TODO: i think r_config_eval must disapear
+						char *res = r_config_eval (r->config, opt.arg, false, NULL);
+						r_cons_print (r->cons, res);
+						free (res);
+						r_list_append (mr.evals, (void *)strdup (opt.arg));
+					} else {
+						R_LOG_ERROR ("Needed -e key=value");
+					}
 				}
 			}
 			break;
@@ -901,13 +923,6 @@ R_API int r_main_radare2(int argc, const char **argv) {
 			free (mr.forcebin);
 			mr.forcebin = strdup (opt.arg);
 			break;
-		case 'h':
-			mr.help++;
-			break;
-		case 'H':
-			main_print_var (opt.arg);
-			mainr2_fini (&mr);
-			return 0;
 		case 'i':
 			if (R_STR_ISEMPTY (opt.arg)) {
 				R_LOG_ERROR ("Cannot open empty script path");
@@ -1044,7 +1059,9 @@ R_API int r_main_radare2(int argc, const char **argv) {
 		return rc;
 	}
 	if (mr.show_versions) {
-		return r_main_version_verify (r, 0, mr.json);
+		int rc = r_main_version_verify (r, 0, mr.json);
+		mainr2_fini (&mr);
+		return rc;
 	}
 	if (mr.show_version) {
 		int mode = 0;
@@ -1155,7 +1172,7 @@ R_API int r_main_radare2(int argc, const char **argv) {
 		} else {
 			r_core_cmd_call (r, "js:");
 		}
-		r_core_free (r);
+		mainr2_fini (&mr);
 		return 0;
 	}
 

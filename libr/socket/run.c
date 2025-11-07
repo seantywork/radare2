@@ -197,7 +197,7 @@ static void set_limit(int n, int a, ut64 b) {
 }
 #endif
 
-static char *getstr(const char *src, size_t * R_NULLABLE out_len) {
+static char *getstr(const char *src, size_t * R_NULLABLE out_len, bool escape) {
 	size_t len = 0;
 	char *ret = NULL;
 
@@ -303,7 +303,7 @@ static char *getstr(const char *src, size_t * R_NULLABLE out_len) {
 		}
 	case ':':
 		{
-		char *hex = getstr (src, NULL);
+		char *hex = getstr (src, NULL, true);
 		if (!hex) {
 			return NULL;
 		}
@@ -323,7 +323,12 @@ static char *getstr(const char *src, size_t * R_NULLABLE out_len) {
 		}
 		break;
 	default:
-		len = r_str_unescape ((ret = strdup (src - 1)));
+		if (escape) {
+			len = r_str_unescape ((ret = strdup (src - 1)));
+		} else {
+			len = strlen (src - 1);
+			ret = strdup (src - 1);
+		}
 		break;
 	}
 beach:
@@ -610,12 +615,13 @@ R_API bool r_run_parseline(RRunProfile *p, const char *b) {
 			p->_stdin = strdup (e);
 		}
 	} else if (!strcmp (b, "stdout")) {
-		p->_stdout = strdup (e);
+		p->_stdout = getstr (e, NULL, false);
 	} else if (!strcmp (b, "stdin")) {
-		p->_stdin = strdup (e);
+		p->_stdin = getstr (e, NULL, false);
 	} else if (!strcmp (b, "stderr")) {
 		p->_stderr = strdup (e);
 	} else if (!strcmp (b, "input")) {
+		// p->_input = getstr (e, NULL, false);
 		p->_input = strdup (e);
 	} else if (!strcmp (b, "chdir")) {
 		p->_chgdir = strdup (e);
@@ -668,7 +674,7 @@ R_API bool r_run_parseline(RRunProfile *p, const char *b) {
 		int n = atoi (b + 3);
 		if (n >= 0 && n < R_RUN_PROFILE_NARGS) {
 			free (p->_args[n]);
-			p->_args[n] = getstr (e, NULL);
+			p->_args[n] = getstr (e, NULL, true);
 			p->_argc++;
 		} else {
 			R_LOG_ERROR ("Out of bounds args index: %d", n);
@@ -716,7 +722,7 @@ R_API bool r_run_parseline(RRunProfile *p, const char *b) {
 			r_sys_setenv (e, V);
 #else
 			size_t len;
-			ut8 *V = (ut8*)getstr (v, &len);
+			ut8 *V = (ut8*)getstr (v, &len, true);
 			r_sys_setenv2 (e, V, len);
 #endif
 			free (V);
@@ -975,6 +981,8 @@ R_API bool r_run_config_env(RRunProfile *p) {
 				r_socket_free (fd);
 				return false;
 			}
+			r_socket_block_time(fd, true, 99999, 0);
+
 			if (p->_pty) {
 				if (!redirect_socket_to_pty (fd)) {
 					R_LOG_ERROR ("socket redirection failed");
@@ -1134,7 +1142,7 @@ R_API bool r_run_config_env(RRunProfile *p) {
 			return false;
 		}
 		size_t inpl;
-		inp = getstr (p->_input, &inpl);
+		inp = getstr (p->_input, &inpl, true);
 		if (inp) {
 			if  (write (f2[1], inp, inpl) != inpl) {
 				R_LOG_ERROR ("Cannot write to the pipe");

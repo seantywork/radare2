@@ -455,7 +455,7 @@ static bool is_data_section(RBinFile *a, RBinSection *s) {
 		return true;
 	}
  	// Rust
-	return strstr (s->name, "_const");
+	return s->name && strstr (s->name, "_const");
 }
 
 static void get_strings_range(RBinFile *bf, RList *list, int min, int raw, bool nofp, ut64 from, ut64 to, RBinSection *section) {
@@ -718,6 +718,7 @@ static void addrline_store_fini(RBinAddrLineStore *als) {
 		r_bloom_free (store->bloomGet);
 #endif
 		r_list_free (store->list);
+		r_strpool_free (store->pool);
 	}
 	free (als->storage);
 }
@@ -1111,6 +1112,9 @@ R_IPI RList *r_bin_file_get_strings(RBinFile *bf, int min, int dump, int raw) {
 			}
 		}
 		r_list_foreach (o->sections, iter, section) {
+			if (!section->name) {
+				continue;
+			}
 			/* load objc/swift strings */
 			const int bits = (bf->bo && bf->bo->info) ? bf->bo->info->bits : 32;
 			const int cfstr_size = (bits == 64) ? 32 : 16;
