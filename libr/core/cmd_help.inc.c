@@ -264,6 +264,17 @@ static RCoreHelpMessage help_msg_question_i = {
 	NULL
 };
 
+static RCoreHelpMessage help_msg_clippy = {
+	"Usage: ?E[0-9KOC] msg", "print a message with clippy avatar", "",
+	"?E", " msg", "print message with default avatar (see scr.clippy)",
+	"?E0", " msg", "print message with first frame of avatar",
+	"?E1", " msg", "print message with second frame of avatar",
+	"?EK", " msg", "print message with cybercat avatar",
+	"?EO", " msg", "print message with orangg avatar",
+	"?EC", " msg", "print message with croco avatar",
+	NULL
+};
+
 static RCoreHelpMessage help_msg_question_e = {
 	"Usage: ?e[=bdgnpst] arg", "print/echo things", "",
 	"?e", "", "echo message with newline",
@@ -1197,7 +1208,11 @@ static int cmd_help(void *data, const char *input) {
 		}
 		break;
 	case 'E': // "?E" clippy echo
-		r_core_clippy (core, input + 1);
+		if (input[1] == '?') {
+			r_core_cmd_help (core, help_msg_clippy);
+		} else {
+			r_core_clippy (core, input + 1);
+		}
 		break;
 	case 'e': // "?e" echo
 		if (input[1] == 'q') { // "?eq"
@@ -1323,11 +1338,11 @@ static int cmd_help(void *data, const char *input) {
 						  char *d = r_str_donut (i);
 						  r_cons_gotoxy (core->cons, 0, 0);
 						  r_str_trim_tail (d);
-						  r_cons_clear_line (core->cons, 0);
+						  r_cons_clear_line (core->cons, false, true);
 						  r_cons_printf (core->cons, "Downloading the Gibson...\n\n");
 						  r_core_cmdf (core, "?e=%d", i);
 						  r_cons_print (core->cons, d);
-						  r_cons_clear_line (core->cons, 0);
+						  r_cons_clear_line (core->cons, false, true);
 						  r_cons_newline (core->cons);
 						  free (d);
 						  r_cons_flush (core->cons);
@@ -1663,15 +1678,25 @@ static void cmd_head(void *data, const char *_input) { // "head"
 
 static int cmd_h(void *data, const char *_input) { // "head"
 	RCore *core = (RCore *)data;
-	if (r_str_startswith (_input, "ead")) {
-		cmd_head (data, _input);
-		return 0;
+	if (_input[0] == 'e') {
+		if (r_str_startswith (_input, "ead")) {
+			cmd_head (data, _input);
+			return 0;
+		}
+		if (r_str_startswith (_input, "elp")) {
+			r_cons_printf (core->cons, "%s\n", help_message);
+			return 0;
+		}
+		if (_input[1] == '?') {
+			r_core_cmd_help ((RCore*)data, help_msg_h);
+		} else {
+			r_core_return_invalid_command (core, "he", _input[1]);
+		}
+	} else if (_input[0] == '?') {
+		r_core_cmd_help ((RCore*)data, help_msg_h);
+	} else {
+		r_core_return_invalid_command (core, "h", _input[0]);
 	}
-	if (r_str_startswith (_input, "elp")) {
-		r_cons_printf (core->cons, "%s\n", help_message);
-		return 0;
-	}
-	r_core_cmd_help ((RCore*)data, help_msg_h);
 	return 0; // invalid command
 }
 #endif

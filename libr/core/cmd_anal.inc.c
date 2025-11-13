@@ -5138,7 +5138,9 @@ static void cmd_afsv(RCore *core, ut64 pcv, int mode) {
 	if (R_UNLIKELY (!aop)) {
 		if (pj) {
 			pj_end (pj);
-			r_core_pj_end (core, pj);
+			char *s = pj_drain (pj);
+			r_cons_println (core->cons, s);
+			free (s);
 		}
 		return;
 	}
@@ -16284,7 +16286,7 @@ static int cmd_anal(void *data, const char *input) {
 		r_core_block_size (core, tbs);
 	}
 	if (r_cons_is_breaked (core->cons)) {
-		r_cons_clear_line (core->cons, 1);
+		r_cons_clear_line (core->cons, true, true);
 	}
 	return 0;
 }
